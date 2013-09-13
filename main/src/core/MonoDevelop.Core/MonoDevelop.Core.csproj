@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003" ToolsVersion="4.0">
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
@@ -9,7 +9,36 @@
     <OutputType>Library</OutputType>
     <AssemblyName>MonoDevelop.Core</AssemblyName>
     <RootNamespace>MonoDevelop.Core</RootNamespace>
+    <BuildInfo>..\..\..\build\bin\buildinfo</BuildInfo>
+    <VcRevision>..\..\..\vcrevision</VcRevision>
   </PropertyGroup>
+  <Choose>
+    <When Condition=" Exists('c:\Program Files\Git\bin\git.exe') ">
+      <PropertyGroup>
+        <Git>c:\Program Files\Git\bin\git.exe</Git>
+      </PropertyGroup>
+    </When>
+    <When Condition=" Exists('c:\Program Files (x86)\Git\bin\git.exe') ">
+      <PropertyGroup>
+        <Git>c:\Program Files (x86)\Git\bin\git.exe</Git>
+      </PropertyGroup>
+    </When>
+    <When Condition=" Exists('c:\msysgit\bin\git.exe') ">
+      <PropertyGroup>
+        <Git>c:\msysgit\bin\git.exe</Git>
+      </PropertyGroup>
+    </When>
+    <When Condition=" Exists('/usr/bin/git') ">
+      <PropertyGroup>
+        <Git>/usr/bin/git</Git>
+      </PropertyGroup>
+    </When>
+    <Otherwise>
+      <PropertyGroup>
+        <Git>git</Git>
+      </PropertyGroup>
+    </Otherwise>
+  </Choose>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <DebugSymbols>True</DebugSymbols>
     <DebugType>full</DebugType>
@@ -21,9 +50,12 @@
       <Execution clr-version="Net_2_0" />
     </Execution>
     <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
+    <DefineConstants>DEBUG</DefineConstants>
+    <GenerateDocumentation>true</GenerateDocumentation>
+    <NoWarn>1591;1573</NoWarn>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
-    <DebugType>none</DebugType>
+    <DebugType>pdbonly</DebugType>
     <Optimize>True</Optimize>
     <OutputPath>..\..\..\build\bin\</OutputPath>
     <ErrorReport>prompt</ErrorReport>
@@ -32,6 +64,9 @@
       <Execution clr-version="Net_2_0" />
     </Execution>
     <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
+    <DebugSymbols>true</DebugSymbols>
+    <GenerateDocumentation>true</GenerateDocumentation>
+    <NoWarn>1591;1573</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="System" />
@@ -43,11 +78,13 @@
     <Reference Include="ICSharpCode.SharpZipLib" />
     <Reference Include="monodoc, Version=1.0.0.0, Culture=neutral, PublicKeyToken=0738eb9f132ed756">
       <Private>False</Private>
+      <SpecificVersion>False</SpecificVersion>
     </Reference>
     <Reference Include="System.Xml.Linq" />
     <Reference Include="System.Web" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="MonoDevelop.Core.Web\Utility.cs" />
     <Compile Include="MonoDevelop.Core\StringParserService.cs" />
     <Compile Include="MonoDevelop.Core\UserException.cs" />
     <Compile Include="MonoDevelop.Core\Runtime.cs" />
@@ -342,7 +379,6 @@
     <Compile Include="MonoDevelop.Projects.Text\TextFile.cs" />
     <Compile Include="MonoDevelop.Projects.Text\TextEncoding.cs" />
     <Compile Include="MonoDevelop.Projects.Text\TextFileReader.cs" />
-    <Compile Include="MonoDevelop.Projects.Text\TextFileService.cs" />
     <Compile Include="MonoDevelop.Projects.Text\TextFormatter.cs" />
     <Compile Include="MonoDevelop.Projects.Utility\DiffUtility.cs" />
     <Compile Include="MonoDevelop.Core.StringParsing\IStringTagProvider.cs" />
@@ -376,7 +412,6 @@
     <Compile Include="MonoDevelop.Core\ApplicationService.cs" />
     <Compile Include="MonoDevelop.Core.ProgressMonitoring\ProgressStatusMonitor.cs" />
     <Compile Include="MonoDevelop.Projects\LanguageBindingService.cs" />
-    <Compile Include="MonoDevelop.Core.AddIns\MimeTypeExtensionNode.cs" />
     <Compile Include="MonoDevelop.Projects\ILanguageBinding.cs" />
     <Compile Include="MonoDevelop.Core\Platform.cs" />
     <Compile Include="MonoDevelop.Core\UserProfile.cs" />
@@ -408,11 +443,29 @@
     <Compile Include="MonoDevelop.Core.AddIns\AssemblyInstalledCondition.cs" />
     <Compile Include="MonoDevelop.Core\WebCertificateService.cs" />
     <Compile Include="MonoDevelop.Core\IWebCertificateProvider.cs" />
+    <Compile Include="MonoDevelop.Core.Execution\ExecutionTarget.cs" />
     <Compile Include="MonoDevelop.Core.Assemblies\SupportedFramework.cs" />
+    <Compile Include="MonoDevelop.Projects.Extensions\UnknownProjectTypeNode.cs" />
+    <Compile Include="MonoDevelop.Core.Execution\ICommandFactory.cs" />
+    <Compile Include="MonoDevelop.Core.Execution\DotNetCommandFactory.cs" />
+    <Compile Include="BuildVariables.cs" />
+    <Compile Include="AddinInfo.cs" />
+    <Compile Include="MonoDevelop.Core.Web\CredentialStore.cs" />
+    <Compile Include="MonoDevelop.Core.Web\CredentialType.cs" />
+    <Compile Include="MonoDevelop.Core.Web\ICredentialCache.cs" />
+    <Compile Include="MonoDevelop.Core.Web\ICredentialProvider.cs" />
+    <Compile Include="MonoDevelop.Core.Web\IProxyCache.cs" />
+    <Compile Include="MonoDevelop.Core.Web\ProxyCache.cs" />
+    <Compile Include="MonoDevelop.Core.Web\RequestHelper.cs" />
+    <Compile Include="MonoDevelop.Core.Web\IHttpWebResponse.cs" />
+    <Compile Include="MonoDevelop.Core.Web\CredentialProviderExtensions.cs" />
+    <Compile Include="MonoDevelop.Core.Web\WebService.cs" />
+    <Compile Include="MonoDevelop.Core.Logging\AssertLoggingTraceListener.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Makefile.am" />
     <None Include="MonoDevelop.Projects.Formats.MSBuild.Conditions\InvalidProjectFileException.cs" />
+    <None Include="BuildVariables.cs.in" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="MonoDevelop.Core.addin.xml">
@@ -437,21 +490,39 @@
     <EmbeddedResource Include="md1format.xml">
       <LogicalName>md1format.xml</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="frameworks\framework_NET_4_5.xml">
+      <LogicalName>framework_NET_4_5.xml</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="frameworks\framework_NET_3_5_client.xml">
+      <LogicalName>framework_NET_3_5_client.xml</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="frameworks\framework_NET_4_0_client.xml">
+      <LogicalName>framework_NET_4_0_client.xml</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
   <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
+  <Target Name="BeforeBuild">
+    <MakeDir Directories="$(OutputPath)" />
+    <Exec Command="&quot;$(Git)&quot; rev-parse HEAD &gt; $(BuildInfo)" WorkingDirectory="$(MSBuildProjectDirectory)" IgnoreExitCode="True" />
+    <Exec Command="&quot;$(Git)&quot; rev-parse HEAD &gt; $(VcRevision)" WorkingDirectory="$(MSBuildProjectDirectory)" IgnoreExitCode="True" />
+  </Target>
   <ItemGroup>
     <ProjectReference Include="..\MonoDevelop.Projects.Formats.MSBuild\MonoDevelop.Projects.Formats.MSBuild.csproj">
       <Project>{A437F1A3-78DF-4F00-8053-D32A8B1EB679}</Project>
       <Name>MonoDevelop.Projects.Formats.MSBuild</Name>
       <Private>False</Private>
     </ProjectReference>
-    <ProjectReference Include="..\..\..\external\Mono.Cecil\Mono.Cecil.csproj">
+    <ProjectReference Include="..\..\..\external\cecil\Mono.Cecil.csproj">
       <Project>{D68133BD-1E63-496E-9EDE-4FBDBF77B486}</Project>
       <Name>Mono.Cecil</Name>
     </ProjectReference>
-    <ProjectReference Include="..\..\..\external\Mono.Cecil\symbols\mdb\Mono.Cecil.Mdb.csproj">
+    <ProjectReference Include="..\..\..\external\cecil\symbols\mdb\Mono.Cecil.Mdb.csproj">
       <Project>{8559DD7F-A16F-46D0-A05A-9139FAEBA8FD}</Project>
       <Name>Mono.Cecil.Mdb</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\..\..\external\Newtonsoft.Json\Src\Newtonsoft.Json\Newtonsoft.Json.csproj">
+      <Project>{A9AE40FF-1A21-414A-9FE7-3BE13644CC6D}</Project>
+      <Name>Newtonsoft.Json</Name>
     </ProjectReference>
     <ProjectReference Include="..\..\..\external\nrefactory\ICSharpCode.NRefactory\ICSharpCode.NRefactory.csproj">
       <Project>{3B2A5653-EC97-4001-BB9B-D90F1AF2C371}</Project>
@@ -477,10 +548,21 @@
       <Project>{4CB170EF-DFE6-4A56-9E1B-A85449E827A7}</Project>
       <Name>IKVM.Reflection</Name>
     </ProjectReference>
+    <ProjectReference Include="..\..\..\external\cecil\symbols\pdb\Mono.Cecil.Pdb.csproj">
+      <Project>{63E6915C-7EA4-4D76-AB28-0D7191EEA626}</Project>
+      <Name>Mono.Cecil.Pdb</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\..\..\external\nrefactory\ICSharpCode.NRefactory.Cecil\ICSharpCode.NRefactory.Cecil.csproj">
+      <Project>{2B8F4F83-C2B3-4E84-A27B-8DEE1BE0E006}</Project>
+      <Name>ICSharpCode.NRefactory.Cecil</Name>
+    </ProjectReference>
   </ItemGroup>
   <ItemGroup>
     <Content Include="MonoDevelop.Core.dll.config">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="MonoDevelop.Core.Web\" />
   </ItemGroup>
 </Project>

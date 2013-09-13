@@ -40,6 +40,11 @@ namespace MonoDevelop.Projects
 		bool singleDir;
 		bool singleVirtualDir;
 		Project commonProject;
+
+		public ProjectFileEventArgs (Project project, ProjectFile file, string property)
+		{
+			Add (new ProjectFileEventInfo (project, file, property));
+		}
 		
 		public ProjectFileEventArgs (Project project, ProjectFile file)
 		{
@@ -128,31 +133,33 @@ namespace MonoDevelop.Projects
 	
 	public class ProjectFileEventInfo
 	{
-		Project project;
-		ProjectFile file;
-		
 		public Project Project {
-			get {
-				return project;
-			}
+			get; private set;
 		}
 		
 		public ProjectFile ProjectFile {
-			get {
-				return file;
-			}
+			get; private set;
+		}
+
+		public string Property {
+			get; private set;
+		}
+
+		public ProjectFileEventInfo (Project project, ProjectFile file, string property)
+		{
+			Property = property;
+			ProjectFile = file;
+			Project = project;
 		}
 		
-		public ProjectFileEventInfo (Project project, ProjectFile file)
+		public ProjectFileEventInfo (Project project, ProjectFile file) : this (project, file, null)
 		{
-			this.project = project;
-			this.file = file;
 		}
 	}
 	
 	public delegate void ProjectFileRenamedEventHandler(object sender, ProjectFileRenamedEventArgs e);
 	
-	public class ProjectFileRenamedEventArgs : EventArgsChain<ProjectFileEventInfo>
+	public class ProjectFileRenamedEventArgs : EventArgsChain<ProjectFileRenamedEventInfo>
 	{
 		public ProjectFileRenamedEventArgs (Project project, ProjectFile file, FilePath oldName)
 		{

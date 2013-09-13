@@ -20,11 +20,18 @@ namespace MonoDevelop.VersionControl
 		string vcsName;
 
 		int references;
+
+		public FilePath RootPath
+		{
+			get;
+			protected set;
+		}
 		
 		public event EventHandler NameChanged;
 		
 		public Repository ()
 		{
+			infoCache = new VersionInfoCache (this);
 		}
 		
 		public Repository (VersionControlSystem vcs): this ()
@@ -125,7 +132,8 @@ namespace MonoDevelop.VersionControl
 			if (vinfo.IsVersioned) {
 				operations = VersionControlOperation.Commit | VersionControlOperation.Update | VersionControlOperation.Log;
 				if (exists) {
-					operations |= VersionControlOperation.Remove;
+					if (!vinfo.HasLocalChange (VersionStatus.ScheduledDelete))
+						operations |= VersionControlOperation.Remove;
 					if (vinfo.HasLocalChanges || vinfo.IsDirectory)
 						operations |= VersionControlOperation.Revert;
 				}
@@ -141,25 +149,16 @@ namespace MonoDevelop.VersionControl
 			}
 			return operations;
 		}
-		
+
 		// Returns the versioning status of a file or directory
-		public VersionInfo GetVersionInfo (FilePath localPath)
+		public VersionInfo GetVersionInfo (FilePath localPath, VersionInfoQueryFlags queryFlags = VersionInfoQueryFlags.None)
 		{
-			return GetVersionInfo (localPath, false);
-		}
-		
-		// Returns the versioning status of a file or directory
-		public VersionInfo GetVersionInfo (FilePath localPath, bool getRemoteStatus)
-		{
-			VersionInfo[] infos = OnGetVersionInfo (new FilePath[] { localPath }, getRemoteStatus).ToArray ();
+			VersionInfo[] infos = GetVersionInfo (new FilePath[] { localPath }, queryFlags).ToArray ();
 			if (infos.Length != 1) {
-				var names = infos;
 				LoggingService.LogError ("VersionControl returned {0} items for {1}", infos.Length, localPath);
 				LoggingService.LogError ("The infos were: {0}", string.Join (" ::: ", infos.Select (i => i.LocalPath)));
 			}
-			VersionInfo vi = infos.Single ();
-			vi.Init (this);
-			return vi;
+			return infos.Single ();
 		}
 		
 		/// <summary>
@@ -168,36 +167,155 @@ namespace MonoDevelop.VersionControl
 		/// <param name='paths'>
 		/// A list of files or directories
 		/// </param>
-		public IEnumerable<VersionInfo> GetVersionInfo (IEnumerable<FilePath> paths)
-		{
-			return GetVersionInfo (paths, false);
-		}
-		
-		/// <summary>
-		/// Returns the versioning status of a set of files or directories
-		/// </summary>
-		/// <param name='paths'>
-		/// A list of files or directories
+		/// <param name='queryFlags'>
+		/// Use VersionInfoQueryFlags enum for options.
 		/// </param>
-		/// <param name='getRemoteStatus'>
-		/// True if remote status information has to be included
-		/// </param>
-		public IEnumerable<VersionInfo> GetVersionInfo (IEnumerable<FilePath> paths, bool getRemoteStatus)
+		public IEnumerable<VersionInfo> GetVersionInfo (IEnumerable<FilePath> paths, VersionInfoQueryFlags queryFlags = VersionInfoQueryFlags.None)
 		{
-			foreach (VersionInfo vi in OnGetVersionInfo (paths, false)) {
-				vi.Init (this);
-				yield return vi;
+			if ((queryFlags & VersionInfoQueryFlags.IgnoreCache) != 0) {
+				// We shouldn't use IEnumerable because elements don't save property modifications.
+				var res = OnGetVersionInfo (paths, (queryFlags & VersionInfoQueryFlags.IncludeRemoteStatus) != 0).ToList ();
+				infoCache.SetStatus (res);
+				return res;
 			}
+			List<FilePath> pathsToQuery = new List<FilePath> ();
+			var result = new List<VersionInfo> ();
+			foreach (var p in paths) {
+				var vi = infoCache.GetStatus (p);
+				if (vi != null) {
+					result.Add (vi);
+					// This status has been invalidated, query it asynchronously
+					if (vi.RequiresRefresh)
+						pathsToQuery.Add (p);
+				}
+				else {
+					// If there is no cached status, query it asynchronously
+					vi = new VersionInfo (p, "", Directory.Exists (p), VersionStatus.Versioned, null, VersionStatus.Versioned, null);
+					infoCache.SetStatus (vi, false);
+					result.Add (vi);
+					pathsToQuery.Add (p);
+				}
+//				Console.WriteLine ("GetVersionInfo " + string.Join (", ", paths.Select (p => p.FullPath)));
+			}
+			if (pathsToQuery.Count > 0)
+				AddQuery (new VersionInfoQuery () { Paths = pathsToQuery, QueryFlags = queryFlags });
+			return result;
 		}
-		
+
 		public VersionInfo[] GetDirectoryVersionInfo (FilePath localDirectory, bool getRemoteStatus, bool recursive)
 		{
-			VersionInfo[] infos = OnGetDirectoryVersionInfo (localDirectory, getRemoteStatus, recursive);
-			foreach (var vi in infos)
-				vi.Init (this);
-			return infos;
+			try {
+				if (recursive)
+					return OnGetDirectoryVersionInfo (localDirectory, getRemoteStatus, recursive);
+
+				var status = infoCache.GetDirectoryStatus (localDirectory);
+				if (status != null && !status.RequiresRefresh && (!getRemoteStatus || status.HasRemoteStatus))
+					return status.FileInfo;
+
+				// If there is no cached status, query it asynchronously
+				DirectoryInfoQuery q = new DirectoryInfoQuery () {
+					Directory = localDirectory,
+					GetRemoteStatus = getRemoteStatus
+				};
+				AddQuery (q);
+
+				// If we have a status value but the value was invalidated (RequiresRefresh == true)
+				// then we return the invalidated value while we start an async query to get the new one
+
+				if (status != null && status.RequiresRefresh && (!getRemoteStatus || status.HasRemoteStatus))
+					return status.FileInfo;
+				return new VersionInfo[0];
+			} finally {
+				//Console.WriteLine ("GetDirectoryVersionInfo " + localDirectory + " - " + (DateTime.Now - now).TotalMilliseconds);
+			}
 		}
-		
+
+		public void ClearCachedVersionInfo (FilePath rootPath)
+		{
+			infoCache.ClearCachedVersionInfo (rootPath);
+		}
+
+		public void ClearCachedVersionInfo (params FilePath[] paths)
+		{
+			foreach (var p in paths)
+				infoCache.ClearCachedVersionInfo (p);
+		}
+
+		class VersionInfoQuery
+		{
+			public List<FilePath> Paths;
+			public VersionInfoQueryFlags QueryFlags;
+		}
+
+		class DirectoryInfoQuery
+		{
+			public FilePath Directory;
+			public bool GetRemoteStatus;
+		}
+
+		Queue<VersionInfoQuery> fileQueryQueue = new Queue<VersionInfoQuery> ();
+		Queue<DirectoryInfoQuery> directoryQueryQueue = new Queue<DirectoryInfoQuery> ();
+		object queryLock = new object ();
+		bool queryRunning;
+		VersionInfoCache infoCache;
+		HashSet<FilePath> filesInQueryQueue = new HashSet<FilePath> ();
+		HashSet<FilePath> directoriesInQueryQueue = new HashSet<FilePath> ();
+
+		void AddQuery (object query)
+		{
+			lock (queryLock) {
+				if (query is VersionInfoQuery) {
+					VersionInfoQuery vi = (VersionInfoQuery)query;
+					vi.Paths.RemoveAll (p => filesInQueryQueue.Contains (p) || directoriesInQueryQueue.Contains (p.ParentDirectory));
+					if (vi.Paths.Count == 0)
+						return;
+					filesInQueryQueue.UnionWith (vi.Paths);
+					fileQueryQueue.Enqueue (vi);
+				//	Console.WriteLine ("GetVersionInfo AddQuery " + string.Join (", ", vi.Paths.Select (p => p.FullPath)));
+				}
+				else if (query is DirectoryInfoQuery) {
+					DirectoryInfoQuery di = (DirectoryInfoQuery)query;
+					if (!directoriesInQueryQueue.Add (di.Directory))
+						return;
+					directoryQueryQueue.Enqueue (di);
+				//	Console.WriteLine ("GetDirectoryVersionInfo AddQuery " + ((DirectoryInfoQuery)query).Directory);
+				}
+				if (!queryRunning) {
+					queryRunning = true;
+					System.Threading.ThreadPool.QueueUserWorkItem (RunQueries);
+				}
+			}
+		}
+
+		void RunQueries (object ob)
+		{
+		//	DateTime t = DateTime.Now;
+		//	Console.WriteLine ("RunQueries started");
+			try {
+				lock (queryLock) {
+					var groups = fileQueryQueue.GroupBy (q => (q.QueryFlags & VersionInfoQueryFlags.IncludeRemoteStatus) != 0);
+					foreach (var group in groups) {
+						var status = OnGetVersionInfo (group.SelectMany (q => q.Paths), group.Key);
+						infoCache.SetStatus (status);
+					}
+					filesInQueryQueue.Clear ();
+
+					foreach (var item in directoryQueryQueue) {
+						var status = OnGetDirectoryVersionInfo (item.Directory, item.GetRemoteStatus, false);
+						infoCache.SetDirectoryStatus (item.Directory, status, item.GetRemoteStatus);
+					}
+					directoriesInQueryQueue.Clear ();
+
+					fileQueryQueue.Clear ();
+					directoryQueryQueue.Clear ();
+					queryRunning = false;
+				}
+			} catch (Exception ex) {
+				LoggingService.LogError ("Version control status query failed", ex);
+			}
+			//Console.WriteLine ("RunQueries finished - " + (DateTime.Now - t).TotalMilliseconds);
+		}
+
 		/// <summary>
 		/// Returns the list of changes done in the given revision
 		/// </summary>
@@ -210,12 +328,17 @@ namespace MonoDevelop.VersionControl
 		}
 		
 		
-		// Returns a path to the last version of the file updated from the repository
+		// Returns the content of the file in the base revision of the working copy.
 		public abstract string GetBaseText (FilePath localFile);
 		
 		// Returns the revision history of a file
-		public abstract Revision[] GetHistory (FilePath localFile, Revision since);
-		
+		public Revision[] GetHistory (FilePath localFile, Revision since)
+		{
+			return OnGetHistory (localFile, since);
+		}
+
+		protected abstract Revision[] OnGetHistory (FilePath localFile, Revision since);
+
 		/// <summary>
 		/// Returns the versioning status of a set of files or directories
 		/// </summary>
@@ -236,8 +359,15 @@ namespace MonoDevelop.VersionControl
 		// Imports a directory into the repository. 'serverPath' is the relative path in the repository.
 		// 'localPath' is the local directory to publish. 'files' is the list of files to add to the new
 		// repository directory (must use absolute local paths).
-		public abstract Repository Publish (string serverPath, FilePath localPath, FilePath[] files, string message, IProgressMonitor monitor);
+		public Repository Publish (string serverPath, FilePath localPath, FilePath[] files, string message, IProgressMonitor monitor)
+		{
+			var res = OnPublish (serverPath, localPath, files, message, monitor);
+			ClearCachedVersionInfo (localPath);
+			return res;
+		}
 		
+		protected abstract Repository OnPublish (string serverPath, FilePath localPath, FilePath[] files, string message, IProgressMonitor monitor);
+
 		// Updates a local file or directory from the repository
 		// Returns a list of updated files
 		public void Update (FilePath localPath, bool recurse, IProgressMonitor monitor)
@@ -245,7 +375,13 @@ namespace MonoDevelop.VersionControl
 			Update (new FilePath[] { localPath }, recurse, monitor);
 		}
 
-		public abstract void Update (FilePath[] localPaths, bool recurse, IProgressMonitor monitor);
+		public void Update (FilePath[] localPaths, bool recurse, IProgressMonitor monitor)
+		{
+			OnUpdate (localPaths, recurse, monitor);
+			ClearCachedVersionInfo (localPaths);
+		}
+		
+		protected abstract void OnUpdate (FilePath[] localPaths, bool recurse, IProgressMonitor monitor);
 		
 		// Called to create a ChangeSet to be used for a commit operation
 		public virtual ChangeSet CreateChangeSet (FilePath basePath)
@@ -270,22 +406,56 @@ namespace MonoDevelop.VersionControl
 		}
 		
 		// Commits changes in a set of files or directories into the repository
-		public abstract void Commit (ChangeSet changeSet, IProgressMonitor monitor);
+		public void Commit (ChangeSet changeSet, IProgressMonitor monitor)
+		{
+			ClearCachedVersionInfo (changeSet.BaseLocalPath);
+			OnCommit (changeSet, monitor);
+		}
 		
-		// Gets the contents of this repositories into the specified local path
-		public void Checkout (FilePath targetLocalPath, bool recurse, IProgressMonitor monitor) { Checkout (targetLocalPath, null, recurse, monitor); }
-		public abstract void Checkout (FilePath targetLocalPath, Revision rev, bool recurse, IProgressMonitor monitor);
+		protected abstract void OnCommit (ChangeSet changeSet, IProgressMonitor monitor);
 
-		public abstract void Revert (FilePath[] localPaths, bool recurse, IProgressMonitor monitor);
+		// Gets the contents of this repositories into the specified local path
+		public void Checkout (FilePath targetLocalPath, bool recurse, IProgressMonitor monitor)
+		{
+			Checkout (targetLocalPath, null, recurse, monitor); 
+		}
+
+		public void Checkout (FilePath targetLocalPath, Revision rev, bool recurse, IProgressMonitor monitor)
+		{
+			ClearCachedVersionInfo (targetLocalPath);
+			OnCheckout (targetLocalPath, rev, recurse, monitor);
+		}
+
+		protected abstract void OnCheckout (FilePath targetLocalPath, Revision rev, bool recurse, IProgressMonitor monitor);
+
+		public void Revert (FilePath[] localPaths, bool recurse, IProgressMonitor monitor)
+		{
+			ClearCachedVersionInfo (localPaths);
+			OnRevert (localPaths, recurse, monitor);
+		}
 
 		public void Revert (FilePath localPath, bool recurse, IProgressMonitor monitor)
 		{
 			Revert (new FilePath[] { localPath }, recurse, monitor);
 		}
 
-		public abstract void RevertRevision (FilePath localPath, Revision revision, IProgressMonitor monitor);
+		protected abstract void OnRevert (FilePath[] localPaths, bool recurse, IProgressMonitor monitor);
 
-		public abstract void RevertToRevision (FilePath localPath, Revision revision, IProgressMonitor monitor);
+		public void RevertRevision (FilePath localPath, Revision revision, IProgressMonitor monitor)
+		{
+			ClearCachedVersionInfo (localPath);
+			OnRevertRevision (localPath, revision, monitor);
+		}
+
+		protected abstract void OnRevertRevision (FilePath localPath, Revision revision, IProgressMonitor monitor);
+
+		public void RevertToRevision (FilePath localPath, Revision revision, IProgressMonitor monitor)
+		{
+			ClearCachedVersionInfo (localPath);
+			OnRevertToRevision (localPath, revision, monitor);
+		}
+		
+		protected abstract void OnRevertToRevision (FilePath localPath, Revision revision, IProgressMonitor monitor);
 		
 		// Adds a file or directory to the repository
 		public void Add (FilePath localPath, bool recurse, IProgressMonitor monitor)
@@ -293,7 +463,13 @@ namespace MonoDevelop.VersionControl
 			Add (new FilePath[] { localPath }, recurse, monitor);
 		}
 
-		public abstract void Add (FilePath[] localPaths, bool recurse, IProgressMonitor monitor);
+		public void Add (FilePath[] localPaths, bool recurse, IProgressMonitor monitor)
+		{
+			OnAdd (localPaths, recurse, monitor);
+			ClearCachedVersionInfo (localPaths);
+		}
+
+		protected abstract void OnAdd (FilePath[] localPaths, bool recurse, IProgressMonitor monitor);
 		
 		// Returns true if the file can be moved from source location (and repository) to this repository
 		public virtual bool CanMoveFilesFrom (Repository srcRepository, FilePath localSrcPath, FilePath localDestPath)
@@ -307,14 +483,26 @@ namespace MonoDevelop.VersionControl
 		// For example, when moving a file to an unversioned directory, the implementation
 		// might just throw an exception, or it could version the directory, or it could
 		// ask the user what to do.
-		public virtual void MoveFile (FilePath localSrcPath, FilePath localDestPath, bool force, IProgressMonitor monitor)
+		public void MoveFile (FilePath localSrcPath, FilePath localDestPath, bool force, IProgressMonitor monitor)
+		{
+			ClearCachedVersionInfo (localSrcPath, localDestPath);
+			OnMoveFile (localSrcPath, localDestPath, force, monitor);
+		}
+		
+		protected virtual void OnMoveFile (FilePath localSrcPath, FilePath localDestPath, bool force, IProgressMonitor monitor)
 		{
 			File.Move (localSrcPath, localDestPath);
 		}
 		
 		// Moves a directory. This method may be called for versioned and unversioned
 		// files. The default implementetions performs a system file move.
-		public virtual void MoveDirectory (FilePath localSrcPath, FilePath localDestPath, bool force, IProgressMonitor monitor)
+		public void MoveDirectory (FilePath localSrcPath, FilePath localDestPath, bool force, IProgressMonitor monitor)
+		{
+			ClearCachedVersionInfo (localSrcPath, localDestPath);
+			OnMoveDirectory (localSrcPath, localDestPath, force, monitor);
+		}
+		
+		protected virtual void OnMoveDirectory (FilePath localSrcPath, FilePath localDestPath, bool force, IProgressMonitor monitor)
 		{
 			Directory.Move (localSrcPath, localDestPath);
 		}
@@ -323,36 +511,74 @@ namespace MonoDevelop.VersionControl
 		// files. The default implementetions performs a system file delete.
 		public void DeleteFile (FilePath localPath, bool force, IProgressMonitor monitor)
 		{
-			DeleteFiles (new FilePath[] { localPath }, force, monitor);
+			DeleteFile (localPath, force, monitor, true);
 		}
 
-		public virtual void DeleteFiles (FilePath[] localPaths, bool force, IProgressMonitor monitor)
+		public void DeleteFile (FilePath localPath, bool force, IProgressMonitor monitor, bool keepLocal)
 		{
-			foreach (string localPath in localPaths) {
-				if (Directory.Exists (localPath))
-					Directory.Delete (localPath, true);
-				else
-					File.Delete (localPath);
-			}
+			DeleteFiles (new FilePath[] { localPath }, force, monitor, keepLocal);
+		}
+
+		public void DeleteFiles (FilePath[] localPaths, bool force, IProgressMonitor monitor)
+		{
+			DeleteFiles (localPaths, force, monitor, true);
+		}
+
+		public void DeleteFiles (FilePath[] localPaths, bool force, IProgressMonitor monitor, bool keepLocal)
+		{
+			OnDeleteFiles (localPaths, force, monitor, keepLocal);
+			ClearCachedVersionInfo (localPaths);
+		}
+
+		[Obsolete ("Use the overload with keepLocal parameter")]
+		protected abstract void OnDeleteFiles (FilePath[] localPaths, bool force, IProgressMonitor monitor);
+
+		protected virtual void OnDeleteFiles (FilePath[] localPaths, bool force, IProgressMonitor monitor, bool keepLocal)
+		{
+#pragma warning disable 618
+			OnDeleteFiles (localPaths, force, monitor);
+#pragma warning restore 618
 		}
 
 		public void DeleteDirectory (FilePath localPath, bool force, IProgressMonitor monitor)
 		{
-			DeleteDirectories (new FilePath[] { localPath }, force, monitor);
+			DeleteDirectory (localPath, force, monitor, true);
 		}
 
-		public virtual void DeleteDirectories (FilePath[] localPaths, bool force, IProgressMonitor monitor)
+		public void DeleteDirectory (FilePath localPath, bool force, IProgressMonitor monitor, bool keepLocal)
 		{
-			foreach (string localPath in localPaths) {
-				if (Directory.Exists (localPath))
-					Directory.Delete (localPath, true);
-				else
-					File.Delete (localPath);
-			}
+			DeleteDirectories (new FilePath[] { localPath }, force, monitor, keepLocal);
+		}
+
+		public void DeleteDirectories (FilePath[] localPaths, bool force, IProgressMonitor monitor)
+		{
+			DeleteDirectories (localPaths, force, monitor, true);
+		}
+
+		public void DeleteDirectories (FilePath[] localPaths, bool force, IProgressMonitor monitor, bool keepLocal)
+		{
+			OnDeleteDirectories (localPaths, force, monitor, keepLocal);
+			ClearCachedVersionInfo (localPaths);
+		}
+
+		[Obsolete ("Use the overload with keepLocal parameter")]
+		protected abstract void OnDeleteDirectories (FilePath[] localPaths, bool force, IProgressMonitor monitor);
+
+		protected virtual void OnDeleteDirectories (FilePath[] localPaths, bool force, IProgressMonitor monitor, bool keepLocal)
+		{
+#pragma warning disable 618
+			OnDeleteDirectories (localPaths, force, monitor);
+#pragma warning restore 618
 		}
 		
 		// Creates a local directory.
-		public virtual void CreateLocalDirectory (FilePath path)
+		public void CreateLocalDirectory (FilePath path)
+		{
+			ClearCachedVersionInfo (path);
+			OnCreateLocalDirectory (path);
+		}
+		
+		protected virtual void OnCreateLocalDirectory (FilePath path)
 		{
 			Directory.CreateDirectory (path);
 		}
@@ -367,18 +593,39 @@ namespace MonoDevelop.VersionControl
 		
 		// Called after a file has been modified.
 		// This method is always called for versioned and unversioned files.
-		public virtual void NotifyFileChanged (FilePath path)
+		public void NotifyFileChanged (FilePath path)
+		{
+			ClearCachedVersionInfo (path);
+			OnNotifyFileChanged (path);
+		}
+		
+		// Called after a file has been modified.
+		// This method is always called for versioned and unversioned files.
+		protected virtual void OnNotifyFileChanged (FilePath path)
 		{
 		}
 		
 		// Locks a file in the repository so no other users can change it
-		public virtual void Lock (IProgressMonitor monitor, params FilePath[] localPaths)
+		public void Lock (IProgressMonitor monitor, params FilePath[] localPaths)
+		{
+			ClearCachedVersionInfo (localPaths);
+			OnLock (monitor, localPaths);
+		}
+		
+		// Locks a file in the repository so no other users can change it
+		protected virtual void OnLock (IProgressMonitor monitor, params FilePath[] localPaths)
 		{
 			throw new System.NotSupportedException ();
 		}
 		
 		// Unlocks a file in the repository so other users can change it
-		public virtual void Unlock (IProgressMonitor monitor, params FilePath[] localPaths)
+		public void Unlock (IProgressMonitor monitor, params FilePath[] localPaths)
+		{
+			ClearCachedVersionInfo (localPaths);
+			OnUnlock (monitor, localPaths);
+		}
+		
+		protected virtual void OnUnlock (IProgressMonitor monitor, params FilePath[] localPaths)
 		{
 			throw new System.NotSupportedException ();
 		}
@@ -388,7 +635,7 @@ namespace MonoDevelop.VersionControl
 			return null;
 		}
 		
-		// Returns a dif description between local files and the remote files.
+		// Returns a diff description between local files and the remote files.
 		// baseLocalPath is the root path of the diff. localPaths is optional and
 		// it can be a list of files to compare.
 		public DiffInfo[] PathDiff (ChangeSet cset, bool remoteDiff)
@@ -422,19 +669,12 @@ namespace MonoDevelop.VersionControl
 			return new DiffInfo [0];
 		}
 
-		/// <summary>
-		/// Returns the text for a file at a particular revision. If the file is binary, 'null' is returned
-		/// </summary>
-		/// <returns>
-		/// The text at revision or 'null' if the file is binary.
-		/// </returns>
-		/// <param name='repositoryPath'>
-		/// Repository path.
-		/// </param>
-		/// <param name='revision'>
-		/// Revision.
-		/// </param>
-		public abstract string GetTextAtRevision (FilePath repositoryPath, Revision revision);
+		public string GetTextAtRevision (FilePath repositoryPath, Revision revision)
+		{
+			return OnGetTextAtRevision (repositoryPath, revision);
+		}
+
+		protected abstract string OnGetTextAtRevision (FilePath repositoryPath, Revision revision);
 
 		static protected DiffInfo[] GenerateUnifiedDiffInfo (string diffContent, FilePath basePath, FilePath[] localPaths)
 		{
@@ -447,11 +687,12 @@ namespace MonoDevelop.VersionControl
 				string pathRoot = null;
 				
 				while ((line = sr.ReadLine ()) != null) {
-					if (pathRoot != null && fileName != null && (line.StartsWith ("+++ " + pathRoot) || line.StartsWith ("--- " + pathRoot))) {
+					if (pathRoot != null && fileName != null &&
+						(line.StartsWith ("+++ " + pathRoot, StringComparison.Ordinal) || line.StartsWith ("--- " + pathRoot, StringComparison.Ordinal))) {
 						line = line.Substring (0, 4) + line.Substring (4 + pathRoot.Length);
 						content.Append (line).Append ('\n');
 					}
-					else if (!line.StartsWith ("Index:")) {
+					else if (!line.StartsWith ("Index:", StringComparison.Ordinal)) {
 						content.Append (line).Append ('\n');
 					} else {
 						if (fileName != null) {
@@ -513,6 +754,24 @@ namespace MonoDevelop.VersionControl
 		/// A revision
 		/// </param>
 		protected abstract RevisionPath[] OnGetRevisionChanges (Revision revision);
+
+		// Ignores a file for version control operations.
+		public void Ignore (FilePath[] localPath)
+		{
+			ClearCachedVersionInfo (localPath);
+			OnIgnore (localPath);
+		}
+
+		protected abstract void OnIgnore (FilePath[] localPath);
+
+		// Unignores a file for version control operations.
+		public void Unignore (FilePath[] localPath)
+		{
+			ClearCachedVersionInfo (localPath);
+			OnUnignore (localPath);
+		}
+
+		protected abstract void OnUnignore (FilePath[] localPath);
 	}
 	
 	public class Annotation
@@ -531,6 +790,15 @@ namespace MonoDevelop.VersionControl
 			get;
 			private set;
 		}
+
+		public string Email {
+			get;
+			private set;
+		}
+
+		public bool HasEmail {
+			get { return Email != null; }
+		}
 		
 		public bool HasDate {
 			get { return Date != DateTime.MinValue; }
@@ -542,10 +810,19 @@ namespace MonoDevelop.VersionControl
 			this.Author = author;
 			this.Date = date;
 		}
+
+		public Annotation (string revision, string author, DateTime date, string email)
+		{
+			this.Revision = revision;
+			this.Author = author;
+			this.Date = date;
+			this.Email = email;
+		}
 		
 		public override string ToString ()
 		{
-			return string.Format ("[Annotation: Revision={0}, Author={1}, Date={2}, HasDate={3}]", Revision, Author, Date, HasDate);
+			return String.Format ("[Annotation: Revision={0}, Author={1}, Date={2}, HasDate={3}, Email={4}, HasEmail={5}]",
+									Revision, Author, Date, HasDate, Email, HasEmail);
 		}
 	}
 	
@@ -573,5 +850,13 @@ namespace MonoDevelop.VersionControl
 		public FilePath BasePath {
 			get { return basePath; }
 		}
+	}
+
+	[Flags]
+	public enum VersionInfoQueryFlags
+	{
+		None = 0,
+		IgnoreCache = 1,
+		IncludeRemoteStatus = 2
 	}
 }

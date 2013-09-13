@@ -51,7 +51,6 @@ namespace MonoDevelop.Projects
 	[ProjectModelDataItem ("AbstractDotNetProject")]
 	public abstract class DotNetProject : Project, IAssemblyProject
 	{
-
 		bool usePartialTypes = true;
 		ProjectParameters languageParameters;
 
@@ -192,6 +191,18 @@ namespace MonoDevelop.Projects
 		
 		public ProjectReferenceCollection References {
 			get { return projectReferences; }
+		}
+
+		public virtual bool CanReferenceProject (DotNetProject targetProject, out string reason)
+		{
+			if (!TargetFramework.CanReferenceAssembliesTargetingFramework (targetProject.TargetFramework)) {
+				reason = GettextCatalog.GetString ("Incompatible target framework: {0}", targetProject.TargetFramework.Id);
+				return false;
+			}
+
+			reason = null;
+
+			return true;
 		}
 
 		public IDotNetLanguageBinding LanguageBinding {
@@ -658,7 +669,7 @@ namespace MonoDevelop.Projects
 
 		public override IEnumerable<SolutionItem> GetReferencedItems (ConfigurationSelector configuration)
 		{
-			List<SolutionItem> items = new List<SolutionItem> ();
+			List<SolutionItem> items = new List<SolutionItem> (base.GetReferencedItems (configuration));
 			if (ParentSolution == null)
 				return items;
 
@@ -696,6 +707,11 @@ namespace MonoDevelop.Projects
 		/// </param>
 		public virtual IEnumerable<string> GetReferencedAssemblies (ConfigurationSelector configuration, bool includeProjectReferences)
 		{
+			return Services.ProjectService.GetExtensionChain (this).GetReferencedAssemblies (this, configuration, includeProjectReferences);
+		}
+
+		internal protected virtual IEnumerable<string> OnGetReferencedAssemblies (ConfigurationSelector configuration, bool includeProjectReferences)
+		{
 			IAssemblyReferenceHandler handler = this.ItemHandler as IAssemblyReferenceHandler;
 			if (handler != null) {
 				if (includeProjectReferences) {
@@ -715,6 +731,11 @@ namespace MonoDevelop.Projects
 					}
 				}
 			}
+
+			// System.Core is an implicit reference
+			var sa = AssemblyContext.GetAssemblies (TargetFramework).FirstOrDefault (a => a.Name == "System.Core" && a.Package.IsFrameworkPackage);
+			if (sa != null)
+				yield return sa.Location;
 		}
 
 		protected internal override void OnSave (IProgressMonitor monitor)
@@ -833,7 +854,7 @@ namespace MonoDevelop.Projects
 				return null;
 			//return all projects in the sln in case some are loaded dynamically
 			//FIXME: should we do this for the whole workspace?
-			return ParentSolution.GetAllProjects ().OfType<DotNetProject> ()
+			return ParentSolution.RootFolder.GetAllBuildableEntries (configuration).OfType<DotNetProject> ()
 				.Select (d => (string) d.GetOutputFileName (configuration))
 				.Where (d => !string.IsNullOrEmpty (d)).ToList ();
 		}
@@ -855,6 +876,8 @@ namespace MonoDevelop.Projects
 			if (config == null)
 				return false;
 			ExecutionCommand cmd = CreateExecutionCommand (configuration, config);
+			if (context.ExecutionTarget != null)
+				cmd.Target = context.ExecutionTarget;
 
 			return (compileTarget == CompileTarget.Exe || compileTarget == CompileTarget.WinExe) && context.ExecutionHandler.CanExecute (cmd);
 		}
@@ -1043,7 +1066,7 @@ namespace MonoDevelop.Projects
 			if (oldHandler.GetType () != newHandler.GetType ()) {
 				// If the file format has a default resource handler different from the one
 				// choosen for this project, then all resource ids must be converted
-				foreach (ProjectFile file in Files) {
+				foreach (ProjectFile file in Files.Where (f => f.BuildAction == BuildAction.EmbeddedResource)) {
 					if (file.Subtype == Subtype.Directory)
 						continue;
 					string oldId = file.GetResourceId (oldHandler);
@@ -1082,14 +1105,12 @@ namespace MonoDevelop.Projects
 
 		internal void NotifyReferenceRemovedFromProject (ProjectReference reference)
 		{
-			SetNeedsBuilding (true);
 			NotifyModified ("References");
 			OnReferenceRemovedFromProject (new ProjectReferenceEventArgs (this, reference));
 		}
 
 		internal void NotifyReferenceAddedToProject (ProjectReference reference)
 		{
-			SetNeedsBuilding (true);
 			NotifyModified ("References");
 			OnReferenceAddedToProject (new ProjectReferenceEventArgs (this, reference));
 		}
@@ -1132,6 +1153,8 @@ namespace MonoDevelop.Projects
 			try {
 				try {
 					ExecutionCommand executionCommand = CreateExecutionCommand (configuration, dotNetProjectConfig);
+					if (context.ExecutionTarget != null)
+						executionCommand.Target = context.ExecutionTarget;
 
 					if (!context.ExecutionHandler.CanExecute (executionCommand)) {
 						monitor.ReportError (GettextCatalog.GetString ("Can not execute \"{0}\". The selected execution mode is not supported for .NET projects.", dotNetProjectConfig.CompiledOutputName), null);
@@ -1148,6 +1171,7 @@ namespace MonoDevelop.Projects
 					aggregatedOperationMonitor.Dispose ();
 				}
 			} catch (Exception ex) {
+				LoggingService.LogError (string.Format ("Cannot execute \"{0}\"", dotNetProjectConfig.CompiledOutputName), ex);
 				monitor.ReportError (GettextCatalog.GetString ("Cannot execute \"{0}\"", dotNetProjectConfig.CompiledOutputName), ex);
 			}
 		}

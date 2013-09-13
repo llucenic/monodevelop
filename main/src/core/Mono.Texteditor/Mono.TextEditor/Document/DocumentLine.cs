@@ -38,11 +38,11 @@ namespace Mono.TextEditor
 	/// </summary>
 	public abstract class DocumentLine : ICSharpCode.NRefactory.Editor.IDocumentLine
 	{
-		List<TextMarker> markers;
+		List<TextLineMarker> markers;
 
-		public IEnumerable<TextMarker> Markers {
+		public IEnumerable<TextLineMarker> Markers {
 			get {
-				return markers ?? Enumerable.Empty<TextMarker> ();
+				return markers ?? Enumerable.Empty<TextLineMarker> ();
 			}
 		}
 
@@ -178,10 +178,10 @@ namespace Mono.TextEditor
 			DelimiterLength = delimiterLength;
 		}
 
-		internal void AddMarker (TextMarker marker)
+		internal void AddMarker (TextLineMarker marker)
 		{
 			if (markers == null)
-				markers = new List<TextMarker> ();
+				markers = new List<TextLineMarker> ();
 			marker.LineSegment = this;
 			markers.Add (marker);
 		}
@@ -194,7 +194,7 @@ namespace Mono.TextEditor
 			}
 		}
 
-		internal void RemoveMarker (TextMarker marker)
+		internal void RemoveMarker (TextLineMarker marker)
 		{
 			marker.LineSegment = null;
 			if (markers == null)
@@ -204,7 +204,7 @@ namespace Mono.TextEditor
 				markers = null;
 		}
 
-		internal TextMarker GetMarker (Type type)
+		internal TextLineMarker GetMarker (Type type)
 		{
 			if (markers == null)
 				return null;
@@ -225,7 +225,7 @@ namespace Mono.TextEditor
 		/// This method gets the line indentation.
 		/// </summary>
 		/// <param name="doc">
-		/// The <see cref="Document"/> the line belongs to.
+		/// The <see cref="TextDocument"/> the line belongs to.
 		/// </param>
 		/// <returns>
 		/// The indentation of the line (all whitespace chars up to the first non ws char).

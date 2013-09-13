@@ -32,6 +32,7 @@ using ICSharpCode.NRefactory.TypeSystem;
 using System.IO;
 using MonoDevelop.Core;
 using MonoDevelop.AspNet.Mvc.Gui;
+using System;
 
 namespace MonoDevelop.AspNet.Mvc
 {
@@ -47,15 +48,18 @@ namespace MonoDevelop.AspNet.Mvc
 			var doc = IdeApp.Workbench.ActiveDocument;
 			var currentLocation = doc.Editor.Caret.Location;
 
-			string controllerName = doc.ParsedDocument.GetTopLevelTypeDefinition (currentLocation).Name;
-			int pos = controllerName.LastIndexOf ("Controller");
-			if (pos != -1)
+			var controller = doc.ParsedDocument.GetTopLevelTypeDefinition (currentLocation);
+			string controllerName = controller.Name;
+			int pos = controllerName.LastIndexOf ("Controller", StringComparison.Ordinal);
+			if (pos > 0)
 				controllerName = controllerName.Remove (pos);
+
+			var baseDirectory = doc.FileName.ParentDirectory.ParentDirectory;
 
 			string actionName = doc.ParsedDocument.GetMember (currentLocation).Name;
 			var viewFoldersPaths = new FilePath[] {
-				doc.Project.BaseDirectory.Combine ("Views", controllerName),
-				doc.Project.BaseDirectory.Combine ("Views", "Shared")
+				baseDirectory.Combine ("Views", controllerName),
+				baseDirectory.Combine ("Views", "Shared")
 			};
 			var viewExtensions = new string[] { ".aspx", ".cshtml" };
 
@@ -87,11 +91,11 @@ namespace MonoDevelop.AspNet.Mvc
 			var currentLocation = doc.Editor.Caret.Location;
 
 			string controllerName = doc.ParsedDocument.GetTopLevelTypeDefinition (currentLocation).Name;
-			int pos = controllerName.LastIndexOf ("Controller");
-			if (pos != -1)
+			int pos = controllerName.LastIndexOf ("Controller", StringComparison.Ordinal);
+			if (pos > 0)
 				controllerName = controllerName.Remove (pos);
 
-			string path = doc.Project.BaseDirectory.Combine ("Views", controllerName);
+			string path = doc.FileName.ParentDirectory.ParentDirectory.Combine ("Views", controllerName);
 			string actionName = doc.ParsedDocument.GetMember (currentLocation).Name;
 			FolderCommandHandler.AddView (project, path, actionName);
 		}
@@ -102,8 +106,12 @@ namespace MonoDevelop.AspNet.Mvc
 		protected override void Update (CommandInfo info)
 		{
 			var doc = IdeApp.Workbench.ActiveDocument;
-			var rootFolder = doc.Project.BaseDirectory.Combine ("Views");
-			if (!(doc.Project is AspMvcProject) || !doc.FileName.ParentDirectory.IsChildPathOf (rootFolder))
+			if (doc == null || !(doc.Project is AspMvcProject)) {
+				info.Enabled = info.Visible = false;
+				return;
+			}
+			var baseDirectory = doc.FileName.ParentDirectory.ParentDirectory;
+			if (!string.Equals (baseDirectory.FileName, "Views"))
 				info.Enabled = info.Visible = false;
 		}
 
@@ -125,14 +133,14 @@ namespace MonoDevelop.AspNet.Mvc
 		public static void Update (CommandInfo info)
 		{
 			var doc = IdeApp.Workbench.ActiveDocument;
-			if (!(doc.Project is AspMvcProject)) {
+			if (doc == null || !(doc.Project is AspMvcProject)) {
 				info.Enabled = info.Visible = false;
 				return;
 			}
 
 			var currentLocation = doc.Editor.Caret.Location;
 			var topLevelType = doc.ParsedDocument.GetTopLevelTypeDefinition (currentLocation);
-			if (topLevelType == null || !topLevelType.BaseTypes.Any (t => t.ToString () == "Controller")) {
+			if (topLevelType == null || !topLevelType.Name.EndsWith ("Controller", StringComparison.Ordinal)) {
 				info.Enabled = info.Visible = false;
 				return;
 			}

@@ -74,13 +74,13 @@ namespace MonoDevelop.NUnit.External
 			string asm = Path.Combine (Path.GetDirectoryName (GetType ().Assembly.Location), "NUnitRunner.dll");
 			Assembly.LoadFrom (asm);
 		}
-		
-		public UnitTestResult Run (IRemoteEventListener listener, ITestFilter filter, string path, string suiteName, List<string> supportAssemblies)
+
+		public UnitTestResult Run (IRemoteEventListener listener, ITestFilter filter, string path, string suiteName, List<string> supportAssemblies, string testRunnerType, string testRunnerAssembly)
 		{
 			NUnitTestRunner runner = GetRunner (path);
 			EventListenerWrapper listenerWrapper = listener != null ? new EventListenerWrapper (listener) : null;
 			
-			TestResult res = runner.Run (listenerWrapper, filter, path, suiteName, supportAssemblies);
+			TestResult res = runner.Run (listenerWrapper, filter, path, suiteName, supportAssemblies, testRunnerType, testRunnerAssembly);
 			return listenerWrapper.GetLocalTestResult (res);
 		}
 		
@@ -239,7 +239,7 @@ namespace MonoDevelop.NUnit.External
 		UnitTestResult singleTestResult;
 		public bool Canceled;
 
-		public LocalTestMonitor (TestContext context, ExternalTestRunner runner, UnitTest rootTest, string rootFullName, bool singleTestRun)
+		public LocalTestMonitor (TestContext context, UnitTest rootTest, string rootFullName, bool singleTestRun)
 		{
 //			this.rootFullName = rootFullName;
 			this.rootTest = rootTest;

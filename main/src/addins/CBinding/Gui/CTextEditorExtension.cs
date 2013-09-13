@@ -81,7 +81,12 @@ namespace CBinding
 		};
 		
 		protected Mono.TextEditor.TextEditorData textEditorData{ get; set; }
-		
+
+		public override string CompletionLanguage {
+			get {
+				return "C/C++";
+			}
+		}
 		static bool IsOpenBrace (char c)
 		{
 			return c == '(' || c == '{' || c == '<' || c == '[';
@@ -562,7 +567,7 @@ namespace CBinding
 			return list;
 		}
 		
-		public override  IParameterDataProvider HandleParameterCompletion (
+		public override  MonoDevelop.Ide.CodeCompletion.ParameterDataProvider HandleParameterCompletion (
 		    CodeCompletionContext completionContext, char completionChar)
 		{
 			if (completionChar != '(')
@@ -728,6 +733,8 @@ namespace CBinding
 		protected virtual int ResetTriggerOffset (CodeCompletionContext completionContext)
 		{
 			int i = completionContext.TriggerOffset;
+			if (i >= Editor.Length)
+				return 0;
 			int accumulator = 0;
 			
 			for (;
@@ -768,15 +775,18 @@ namespace CBinding
 		{
 			int lineOffset = location.Column-1;
 			string line = Editor.GetLineText (location.Line);
-			int first = line.LastIndexOfAny (allowedChars, lineOffset)+1,
-			    last = line.IndexOfAny (allowedChars, lineOffset);
+			if (line.Length == 0)
+				return "";
+			if (lineOffset >= line.Length)
+				lineOffset = line.Length - 1;
+			int first = line.LastIndexOfAny (allowedChars, lineOffset) + 1;
+			int last = line.IndexOfAny (allowedChars, lineOffset);
 			if (last < 0) last = line.Length - 1;
 			string token = string.Empty;
 			    
 			if (first >= 0 && first < last && last < line.Length) {
 				token = line.Substring (first, last-first);
 			}
-			
 			return token.Trim ();
 		}
 	}

@@ -39,6 +39,7 @@ using MonoDevelop.Core;
 using MonoDevelop.Projects;
 using MonoDevelop.Core.Serialization;
 using MonoDevelop.Core.StringParsing;
+using MonoDevelop.Core.Execution;
 
 namespace MonoDevelop.Projects
 {
@@ -282,31 +283,42 @@ namespace MonoDevelop.Projects
 		{
 			return Services.ProjectService.GetExtensionChain (this).CanExecute (this, context, configuration);
 		}
-		
+
+		public IEnumerable<ExecutionTarget> GetExecutionTargets (string configuration)
+		{
+			return GetExecutionTargets ((SolutionConfigurationSelector) configuration);
+		}
+
+		public IEnumerable<ExecutionTarget> GetExecutionTargets (ConfigurationSelector configuration)
+		{
+			return Services.ProjectService.GetExtensionChain (this).GetExecutionTargets (this, configuration);
+		}
+
+		[Obsolete ("This method will be removed in future releases")]
 		public bool NeedsBuilding (string configuration)
 		{
-			return NeedsBuilding ((SolutionConfigurationSelector) configuration);
+			return true;
 		}
 		
+		[Obsolete ("This method will be removed in future releases")]
 		public bool NeedsBuilding (ConfigurationSelector configuration)
 		{
-			return Services.ProjectService.GetExtensionChain (this).GetNeedsBuilding (this, configuration);
+			return true;
 		}
 		
+		[Obsolete ("This method will be removed in future releases")]
 		public void SetNeedsBuilding (bool value)
 		{
-			foreach (string conf in GetConfigurations ())
-				SetNeedsBuilding (value, new SolutionConfigurationSelector (conf));
 		}
 		
+		[Obsolete ("This method will be removed in future releases")]
 		public void SetNeedsBuilding (bool needsBuilding, string configuration)
 		{
-			SetNeedsBuilding (needsBuilding, (SolutionConfigurationSelector) configuration);
 		}
 		
+		[Obsolete ("This method will be removed in future releases")]
 		public void SetNeedsBuilding (bool needsBuilding, ConfigurationSelector configuration)
 		{
-			Services.ProjectService.GetExtensionChain (this).SetNeedsBuilding (this, needsBuilding, configuration);
 		}
 		
 		public virtual FileFormat FileFormat {
@@ -408,10 +420,15 @@ namespace MonoDevelop.Projects
 		{
 			return true;
 		}
-		
+
+		internal protected virtual IEnumerable<ExecutionTarget> OnGetExecutionTargets (ConfigurationSelector configuration)
+		{
+			yield break;
+		}
+
 		internal protected virtual bool OnGetNeedsBuilding (ConfigurationSelector configuration)
 		{
-			return false;
+			return true;
 		}
 		
 		internal protected virtual void OnSetNeedsBuilding (bool val, ConfigurationSelector configuration)

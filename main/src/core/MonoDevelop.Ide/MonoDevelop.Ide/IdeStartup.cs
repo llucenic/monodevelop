@@ -73,6 +73,9 @@ namespace MonoDevelop.Ide
 		
 		int Run (MonoDevelopOptions options)
 		{
+			LoggingService.LogInfo ("Starting {0} {1}", BrandingService.ApplicationName, IdeVersionInfo.MonoDevelopVersion);
+			LoggingService.LogInfo ("Running on {0}", IdeVersionInfo.GetRuntimeInfo ());
+
 			Counters.Initialization.BeginTiming ();
 			
 			if (options.PerfLog) {
@@ -80,20 +83,33 @@ namespace MonoDevelop.Ide
 				LoggingService.LogInfo ("Logging instrumentation service data to file: " + logFile);
 				InstrumentationService.StartAutoSave (logFile, 1000);
 			}
+
+			//ensure native libs initialized before we hit anything that p/invokes
+			Platform.Initialize ();
 			
 			Counters.Initialization.Trace ("Initializing GTK");
+			if (Platform.IsWindows) {
+				CheckWindowsGtk ();
+			}
 			SetupExceptionManager ();
 			
 			try {
-				MonoDevelop.Ide.Gui.GLibLogging.Enabled = true;
+				GLibLogging.Enabled = true;
 			} catch (Exception ex) {
 				LoggingService.LogError ("Error initialising GLib logging.", ex);
 			}
-			
-			//OSXFIXME
+
+			SetupTheme ();
+
 			var args = options.RemainingArgs.ToArray ();
-			Gtk.Application.Init ("monodevelop", ref args);
-			
+			Gtk.Application.Init (BrandingService.ApplicationName, ref args);
+
+			LoggingService.LogInfo ("Using GTK+ {0}", IdeVersionInfo.GetGtkVersion ());
+
+			FilePath p = typeof(IdeStartup).Assembly.Location;
+			Assembly.LoadFrom (p.ParentDirectory.Combine ("Xwt.Gtk.dll"));
+			Xwt.Application.InitializeAsGuest (Xwt.ToolkitType.Gtk);
+
 			//default to Windows IME on Windows
 			if (Platform.IsWindows && Mono.TextEditor.GtkWorkarounds.GtkMinorVersion >= 16) {
 				var settings = Gtk.Settings.Default;
@@ -128,29 +144,40 @@ namespace MonoDevelop.Ide
 				}
 			}
 			
+			Counters.Initialization.Trace ("Initializing Runtime");
+			Runtime.Initialize (true);
+
+			Counters.Initialization.Trace ("Initializing theme and splash window");
+
 			DefaultTheme = Gtk.Settings.Default.ThemeName;
-			if (!string.IsNullOrEmpty (IdeApp.Preferences.UserInterfaceTheme))
-				Gtk.Settings.Default.ThemeName = IdeApp.Preferences.UserInterfaceTheme;
+			string theme = IdeApp.Preferences.UserInterfaceTheme;
+			if (string.IsNullOrEmpty (theme))
+				theme = DefaultTheme;
+			ValidateGtkTheme (ref theme);
+			if (theme != DefaultTheme)
+				Gtk.Settings.Default.ThemeName = theme;
+
 			
 			//don't show the splash screen on the Mac, so instead we get the expected "Dock bounce" effect
 			//this also enables the Mac platform service to subscribe to open document events before the GUI loop starts.
 			if (Platform.IsMac)
 				options.NoSplash = true;
 			
-			IProgressMonitor monitor;
-			
-			if (options.NoSplash) {
+			IProgressMonitor monitor = null;
+			if (!options.NoSplash) {
+				try {
+					monitor = new SplashScreenForm ();
+					((SplashScreenForm)monitor).ShowAll ();
+				} catch (Exception ex) {
+					LoggingService.LogError ("Failed to create splash screen", ex);
+				}
+			}
+			if (monitor == null) {
 				monitor = new MonoDevelop.Core.ProgressMonitoring.ConsoleProgressMonitor ();
-			} else {
-				monitor = SplashScreenForm.SplashScreen;
-				SplashScreenForm.SplashScreen.ShowAll ();
 			}
 			
-			Counters.Initialization.Trace ("Initializing Runtime");
-			monitor.BeginTask (GettextCatalog.GetString ("Starting {0}", BrandingService.ApplicationName), 3);
-			monitor.Step (1);
-			Runtime.Initialize (true);
-			
+			monitor.BeginTask (GettextCatalog.GetString ("Starting {0}", BrandingService.ApplicationName), 2);
+
 			//make sure that the platform service is initialised so that the Mac platform can subscribe to open-document events
 			Counters.Initialization.Trace ("Initializing Platform Service");
 			DesktopService.Initialize ();
@@ -190,13 +217,6 @@ namespace MonoDevelop.Ide
 				version += "." + Assembly.GetEntryAssembly ().GetName ().Version.Build;
 			if (Assembly.GetEntryAssembly ().GetName ().Version.Revision != 0)
 				version += "." + Assembly.GetEntryAssembly ().GetName ().Version.Revision;
-			
-			// System checks
-			if (!CheckBug77135 ())
-				return 1;
-			
-			if (!CheckQtCurve ())
-				return 1;
 
 			CheckFileWatcher ();
 			
@@ -210,12 +230,12 @@ namespace MonoDevelop.Ide
 				
 				if (errorsList.Count > 0) {
 					if (monitor is SplashScreenForm)
-						SplashScreenForm.SplashScreen.Hide ();
+						((SplashScreenForm)monitor).Hide ();
 					AddinLoadErrorDialog dlg = new AddinLoadErrorDialog ((AddinError[]) errorsList.ToArray (typeof(AddinError)), false);
 					if (!dlg.Run ())
 						return 1;
 					if (monitor is SplashScreenForm)
-						SplashScreenForm.SplashScreen.Show ();
+						((SplashScreenForm)monitor).Show ();
 					reportedFailures = errorsList.Count;
 				}
 				
@@ -239,8 +259,11 @@ namespace MonoDevelop.Ide
 			
 			if (error != null) {
 				LoggingService.LogFatalError (null, error);
-				MessageService.ShowException (error,
-				                              GettextCatalog.GetString ("MonoDevelop failed to start. The following error has been reported: ") + error.Message);
+				string message = BrandingService.BrandApplicationName (GettextCatalog.GetString (
+					"MonoDevelop failed to start. The following error has been reported: {0}",
+					error.Message
+				));
+				MessageService.ShowException (error, message);
 				return 1;
 			}
 
@@ -279,6 +302,46 @@ namespace MonoDevelop.Ide
 			InstrumentationService.Stop ();
 			
 			return 0;
+		}
+
+		void SetupTheme ()
+		{
+			// Use the bundled gtkrc only if the Xamarin theme is installed
+			if (File.Exists (Path.Combine (Gtk.Rc.ModuleDir, "libxamarin.so")) || File.Exists (Path.Combine (Gtk.Rc.ModuleDir, "libxamarin.dll"))) {
+				var gtkrc = "gtkrc";
+				if (Platform.IsWindows) {
+					gtkrc += ".win32";
+				} else if (Platform.IsMac) {
+					gtkrc += ".mac";
+				}
+				Environment.SetEnvironmentVariable ("GTK2_RC_FILES", PropertyService.EntryAssemblyPath.Combine (gtkrc));
+			}
+		}
+
+		[System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+		[return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+		static extern bool SetDllDirectory (string lpPathName);
+
+		static void CheckWindowsGtk ()
+		{
+			string location = null;
+			using (var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Xamarin\GtkSharp\InstallFolder")) {
+				if (key != null) {
+					location = key.GetValue (null) as string;
+				}
+			}
+			if (location == null || !File.Exists (Path.Combine (location, "bin", "libgtk-win32-2.0-0.dll"))) {
+				LoggingService.LogError ("Did not find registered GTK# installation");
+				return;
+			}
+			var path = Path.Combine (location, @"bin");
+			try {
+				if (SetDllDirectory (path)) {
+					return;
+				}
+			} catch (EntryPointNotFoundException) {
+			}
+			LoggingService.LogError ("Unable to set GTK# dll directory");
 		}
 		
 		public bool Initialized {
@@ -355,18 +418,46 @@ namespace MonoDevelop.Ide
 			IdeApp.Workbench.Present ();
 			return false;
 		}
-		
-		bool CheckQtCurve ()
+
+		internal static string[] gtkThemeFallbacks = new string[] {
+			"Xamarin",// the best!
+			"Gilouche", // SUSE
+			"Mint-X", // MINT
+			"Radiance", // Ubuntu 'light' theme (MD looks better with the light theme in 4.0 - if that changes switch this one)
+			"Clearlooks" // GTK theme
+		};
+
+		static void ValidateGtkTheme (ref string theme)
 		{
-			if (Gtk.Settings.Default.ThemeName == "QtCurve") {
-				string msg = "QtCurve theme not supported";
-				string desc = "Your system is using the QtCurve GTK+ theme. This theme is known to cause stability issues in MonoDevelop. Please select another theme in the GTK+ Theme Selector.\n\nIf you click on Proceed, MonoDevelop will switch to the default GTK+ theme.";
-				AlertButton res = MessageService.GenericAlert (Gtk.Stock.DialogWarning, msg, desc, AlertButton.Cancel, AlertButton.Proceed);
-				if (res == AlertButton.Cancel)
-					return false;
-				Gtk.Settings.Default.ThemeName = "Gilouche";
+			if (!MonoDevelop.Ide.Gui.OptionPanels.IDEStyleOptionsPanelWidget.IsBadGtkTheme (theme))
+				return;
+
+			var themes = MonoDevelop.Ide.Gui.OptionPanels.IDEStyleOptionsPanelWidget.InstalledThemes;
+
+			string fallback = gtkThemeFallbacks
+				.Select (fb => themes.FirstOrDefault (t => string.Compare (fb, t, StringComparison.OrdinalIgnoreCase) == 0))
+				.FirstOrDefault (t => t != null);
+
+			string message = "Theme Not Supported";
+
+			string detail;
+			if (themes.Count > 0) {
+				detail =
+					"Your system is using the '{0}' GTK+ theme, which is known to be very unstable. MonoDevelop will " +
+					"now switch to an alternate GTK+ theme.\n\n" +
+					"This message will continue to be shown at startup until you set a alternate GTK+ theme as your " +
+					"default in the GTK+ Theme Selector or MonoDevelop Preferences.";
+			} else {
+				detail =
+					"Your system is using the '{0}' GTK+ theme, which is known to be very unstable, and no other GTK+ " +
+					"themes appear to be installed. Please install another GTK+ theme.\n\n" +
+					"This message will continue to be shown at startup until you install a different GTK+ theme and " +
+					"set it as your default in the GTK+ Theme Selector or MonoDevelop Preferences.";
 			}
-			return true;
+
+			MessageService.GenericAlert (Gtk.Stock.DialogWarning, message, detail, AlertButton.Ok);
+
+			theme = fallback ?? themes.FirstOrDefault () ?? theme;
 		}
 		
 		void CheckFileWatcher ()
@@ -380,7 +471,7 @@ namespace MonoDevelop.Ide
 						string msg = "Inotify watch limit is too low (" + n + ").\n";
 						msg += "MonoDevelop will switch to managed file watching.\n";
 						msg += "See http://monodevelop.com/Inotify_Watches_Limit for more info.";
-						LoggingService.LogWarning (msg);
+						LoggingService.LogWarning (BrandingService.BrandApplicationName (msg));
 						Runtime.ProcessService.EnvironmentVariableOverrides["MONO_MANAGED_WATCHER"] = 
 							Environment.GetEnvironmentVariable ("MONO_MANAGED_WATCHER");
 						Environment.SetEnvironmentVariable ("MONO_MANAGED_WATCHER", "1");
@@ -390,70 +481,7 @@ namespace MonoDevelop.Ide
 				LoggingService.LogWarning ("There was a problem checking whether to use managed file watching", e);
 			}
 		}
-		
-		bool CheckBug77135 ()
-		{
-			try {
-				// Check for bug 77135. Some versions of gnome-vfs2 and libgda
-				// make MD crash in the file open dialog or in FileIconLoader.
-				// Only in Suse.
-				
-				string path = "/etc/SuSE-release";
-				if (!File.Exists (path))
-					return true;
-					
-				// Only run the check for SUSE 10
-				StreamReader sr = File.OpenText (path);
-				string txt = sr.ReadToEnd ();
-				sr.Close ();
-				
-				if (txt.IndexOf ("SUSE LINUX 10") == -1)
-					return true;
-					
-				string current_libgda;
-				string current_gnomevfs;
-				string required_libgda = "1.3.91.5.4";
-				string required_gnomevfs = "2.12.0.9.2";
-				
-				StringWriter sw = new StringWriter ();
-				ProcessWrapper pw = Runtime.ProcessService.StartProcess ("rpm", "--qf %{version}.%{release} -q libgda", null, sw, null, null);
-				pw.WaitForOutput ();
-				current_libgda = sw.ToString ().Trim (' ','\n');
-				
-				sw = new StringWriter ();
-				pw = Runtime.ProcessService.StartProcess ("rpm", "--qf %{version}.%{release} -q gnome-vfs2", null, sw, null, null);
-				pw.WaitForOutput ();
-				current_gnomevfs = sw.ToString ().Trim (' ','\n');
-				
-				bool fail1 = Addin.CompareVersions (current_libgda, required_libgda) == 1;
-				bool fail2 = Addin.CompareVersions (current_gnomevfs, required_gnomevfs) == 1;
-				
-				if (fail1 || fail2) {
-					string msg = GettextCatalog.GetString ("Some packages installed in your system are not compatible with MonoDevelop:\n");
-					if (fail1)
-						msg += "\nlibgda " + current_libgda + " ("+ GettextCatalog.GetString ("version required: {0}", required_libgda) + ")";
-					if (fail2)
-						msg += "\ngnome-vfs2 " + current_gnomevfs + " ("+ GettextCatalog.GetString ("version required: {0}", required_gnomevfs) + ")";
-					msg += "\n\n";
-					msg += GettextCatalog.GetString ("You need to upgrade the previous packages to start using MonoDevelop.");
-					
-					SplashScreenForm.SplashScreen.Hide ();
-					Gtk.MessageDialog dlg = new Gtk.MessageDialog (null, Gtk.DialogFlags.Modal, Gtk.MessageType.Error, Gtk.ButtonsType.Ok, msg);
-					dlg.Run ();
-					dlg.Destroy ();
-					
-					return false;
-				} else
-					return true;
-			}
-			catch (Exception ex)
-			{
-				// Just ignore for now.
-				Console.WriteLine (ex);
-				return true;
-			}
-		}
-		
+
 		void SetupExceptionManager ()
 		{
 			System.Threading.Tasks.TaskScheduler.UnobservedTaskException += (sender, e) => {
@@ -465,6 +493,9 @@ namespace MonoDevelop.Ide
 			};
 			AppDomain.CurrentDomain.UnhandledException += delegate (object sender, UnhandledExceptionEventArgs args) {
 				HandleException ((Exception)args.ExceptionObject, args.IsTerminating);
+			};
+			Xwt.Application.UnhandledException += (sender, e) => {
+				HandleException (e.ErrorException, false);
 			};
 		}
 		
@@ -502,18 +533,26 @@ namespace MonoDevelop.Ide
 			bool retry = false;
 			do {
 				try {
-					Runtime.SetProcessName (BrandingService.ApplicationName);
+					var exename = Path.GetFileNameWithoutExtension (Assembly.GetEntryAssembly ().Location);
+					if (!Platform.IsMac && !Platform.IsWindows)
+						exename = exename.ToLower ();
+					Runtime.SetProcessName (exename);
 					var app = new IdeStartup ();
 					ret = app.Run (options);
 					break;
 				} catch (Exception ex) {
 					if (!retry && AddinManager.IsInitialized) {
-						LoggingService.LogWarning (BrandingService.ApplicationName + " failed to start. Rebuilding addins registry.");
+						LoggingService.LogWarning (BrandingService.ApplicationName + " failed to start. Rebuilding addins registry.", ex);
 						AddinManager.Registry.Rebuild (new Mono.Addins.ConsoleProgressStatus (true));
-						LoggingService.LogInfo ("Addin registry rebuilt. Restarting MonoDevelop.");
+						LoggingService.LogInfo ("Addin registry rebuilt. Restarting {0}.", BrandingService.ApplicationName);
 						retry = true;
 					} else {
-						LoggingService.LogFatalError (BrandingService.ApplicationName + " failed to start. Some of the assemblies required to run MonoDevelop (for example gtk-sharp, gnome-sharp or gtkhtml-sharp) may not be properly installed in the GAC.", ex);
+						LoggingService.LogFatalError (
+							string.Format (
+								"{0} failed to start. Some of the assemblies required to run {0} (for example gtk-sharp)" +
+								"may not be properly installed in the GAC.",
+								BrandingService.ApplicationName
+							), ex);
 						retry = false;
 					}
 				} finally {
@@ -565,7 +604,7 @@ namespace MonoDevelop.Ide
 			}
 			
 			if (opt.ShowHelp) {
-				Console.WriteLine (BrandingService.ApplicationName + " " + BuildVariables.PackageVersionLabel);
+				Console.WriteLine (BrandingService.ApplicationName + " " + BuildInfo.VersionLabel);
 				Console.WriteLine ("Options:");
 				optSet.WriteOptionDescriptions (Console.Out);
 			}

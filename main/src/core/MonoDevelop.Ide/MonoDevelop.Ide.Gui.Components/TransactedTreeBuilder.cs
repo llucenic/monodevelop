@@ -348,7 +348,12 @@ namespace MonoDevelop.Ide.Gui.Components
 					node = null;
 				}
 			}
-	
+		
+			public void ScrollToNode ()
+			{
+				tree.ScrollToCell (tree.store.GetPath (node.NodeIter));
+			}
+
 			public bool FindChild (object dataObject)
 			{
 				return FindChild (dataObject, false);
@@ -498,6 +503,14 @@ namespace MonoDevelop.Ide.Gui.Components
 			{
 				node.Filled = true;
 				NodePosition pos = CurrentPosition;
+				foreach (NodeBuilder builder in node.BuilderChain) {
+					try {
+						builder.PrepareChildNodes (node.DataItem);
+					} catch (Exception ex) {
+						LoggingService.LogError (ex.ToString ());
+					}
+					MoveToPosition (pos);
+				}
 				foreach (NodeBuilder builder in node.BuilderChain) {
 					try {
 						builder.BuildChildNodes (this, node.DataItem);
@@ -905,6 +918,11 @@ namespace MonoDevelop.Ide.Gui.Components
 				}
 				while (tree.store.IterNext (ref child));
 			}
+		}
+	
+		public void ScrollToCell (Gtk.TreePath treePath)
+		{
+			Tree.ScrollToCell (treePath, null, true, 0, 0);
 		}
 	}
 }

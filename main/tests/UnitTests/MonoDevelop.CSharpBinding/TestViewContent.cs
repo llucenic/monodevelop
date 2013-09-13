@@ -195,9 +195,9 @@ namespace MonoDevelop.CSharpBinding.Tests
 		
 		public List<object> Contents = new List<object> ();
 		
-		public override T GetContent<T> () 
+		public override object GetContent (Type type) 
 		{
-			return Contents.OfType<T> ().FirstOrDefault () ??  base.GetContent<T> ();
+			return Contents.FirstOrDefault (o => type.IsInstanceOfType (type)) ??  base.GetContent (type);
 		}
 		
 		public IDisposable OpenUndoGroup ()
@@ -209,6 +209,7 @@ namespace MonoDevelop.CSharpBinding.Tests
 		{
 			return data;
 		}
+
 		#region IEditableTextBuffer implementation
 		public bool HasInputFocus {
 			get {
@@ -216,6 +217,10 @@ namespace MonoDevelop.CSharpBinding.Tests
 			}
 		}
 		
+		public void RunWhenLoaded (System.Action action)
+		{
+			action ();
+		}
 		#endregion
 		public event EventHandler CaretPositionSet;
 		public event EventHandler<TextChangedEventArgs> TextChanged;

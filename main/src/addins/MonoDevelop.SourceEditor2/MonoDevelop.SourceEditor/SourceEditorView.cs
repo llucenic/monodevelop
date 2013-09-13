@@ -50,7 +50,10 @@ using ICSharpCode.NRefactory.TypeSystem;
 using MonoDevelop.Ide.TypeSystem;
 using ICSharpCode.NRefactory.Semantics;
 using MonoDevelop.SourceEditor.QuickTasks;
+using MonoDevelop.Ide.TextEditing;
 using System.Text;
+using Mono.Addins;
+using Mono.TextEditor.Utils;
 
 namespace MonoDevelop.SourceEditor
 {	
@@ -64,9 +67,10 @@ namespace MonoDevelop.SourceEditor
 		DateTime lastSaveTimeUtc;
 		string loadedMimeType;
 		internal object MemoryProbe = Counters.SourceViewsInMemory.CreateMemoryProbe ();
-		TextMarker currentDebugLineMarker;
-		TextMarker debugStackLineMarker;
+		TextLineMarker currentDebugLineMarker;
+		TextLineMarker debugStackLineMarker;
 		int lastDebugLine = -1;
+		BreakpointStore breakpoints;
 		EventHandler currentFrameChanged;
 		EventHandler<BreakpointEventArgs> breakpointAdded;
 		EventHandler<BreakpointEventArgs> breakpointRemoved;
@@ -152,6 +156,29 @@ namespace MonoDevelop.SourceEditor
 		}
 		
 		bool wasEdited = false;
+		uint removeMarkerTimeout;
+		Queue<MessageBubbleTextMarker> markersToRemove = new Queue<MessageBubbleTextMarker> ();
+
+
+		void RemoveMarkerQueue ()
+		{
+			if (removeMarkerTimeout != 0)
+				GLib.Source.Remove (removeMarkerTimeout);
+		}
+
+		void ResetRemoveMarker ()
+		{
+			RemoveMarkerQueue ();
+			removeMarkerTimeout = GLib.Timeout.Add (2000, delegate {
+				while (markersToRemove.Count > 0) {
+					var _m = markersToRemove.Dequeue ();
+					currentErrorMarkers.Remove (_m);
+					widget.TextEditor.Document.RemoveMarker (_m);
+				}
+				removeMarkerTimeout = 0;
+				return false;
+			});
+		}
 
 		public SourceEditorView ()
 		{
@@ -160,53 +187,17 @@ namespace MonoDevelop.SourceEditor
 			breakpointAdded = (EventHandler<BreakpointEventArgs>)DispatchService.GuiDispatch (new EventHandler<BreakpointEventArgs> (OnBreakpointAdded));
 			breakpointRemoved = (EventHandler<BreakpointEventArgs>)DispatchService.GuiDispatch (new EventHandler<BreakpointEventArgs> (OnBreakpointRemoved));
 			breakpointStatusChanged = (EventHandler<BreakpointEventArgs>)DispatchService.GuiDispatch (new EventHandler<BreakpointEventArgs> (OnBreakpointStatusChanged));
-			
+
 			widget = new SourceEditorWidget (this);
-			widget.TextEditor.Document.SyntaxModeChanged += delegate(object sender, SyntaxModeChangeEventArgs e) {
-				var oldProvider = e.OldMode as IQuickTaskProvider;
-				if (oldProvider != null)
-					widget.RemoveQuickTaskProvider (oldProvider);
-				var newProvider = e.NewMode as IQuickTaskProvider;
-				if (newProvider != null)
-					widget.AddQuickTaskProvider (newProvider);
-			};
-			widget.TextEditor.Document.TextReplaced += delegate(object sender, DocumentChangeEventArgs args) {
-				if (!inLoad) {
-					if (widget.TextEditor.Document.IsInAtomicUndo) {
-						wasEdited = true;
-					} else {
-						InformAutoSave ();
-					}
-				}
-				int startIndex = args.Offset;
-				int endIndex = startIndex + Math.Max (args.RemovalLength, args.InsertionLength);
-				if (TextChanged != null)
-					TextChanged (this, new TextChangedEventArgs (startIndex, endIndex));
-			};
-			
-			widget.TextEditor.Document.LineChanged += delegate(object sender, LineEventArgs e) {
-				UpdateBreakpoints ();
-				if (messageBubbleCache != null && messageBubbleCache.RemoveLine (e.Line)) {
-					MessageBubbleTextMarker marker = currentErrorMarkers.FirstOrDefault (m => m.LineSegment == e.Line);
-					if (marker != null) {
-						widget.TextEditor.TextViewMargin.RemoveCachedLine (e.Line); 
-						// ensure that the line cache is renewed
-						marker.GetLineHeight (widget.TextEditor);
-					}
-				}
-			};
-			
-			widget.TextEditor.Document.BeginUndo += delegate {
-				wasEdited = false;
-			};
-			
-			widget.TextEditor.Document.EndUndo += delegate {
-				if (wasEdited)
-					InformAutoSave ();
-			};
-			widget.TextEditor.Document.Undone += (o, a) => AutoSave.InformAutoSaveThread (Document);
-			widget.TextEditor.Document.Redone += (o, a) => AutoSave.InformAutoSaveThread (Document);
-			
+			widget.TextEditor.Document.SyntaxModeChanged += HandleSyntaxModeChanged;
+			widget.TextEditor.Document.TextReplaced += HandleTextReplaced;
+			widget.TextEditor.Document.LineChanged += HandleLineChanged;
+
+			widget.TextEditor.Document.BeginUndo += HandleBeginUndo; 
+			widget.TextEditor.Document.EndUndo += HandleEndUndo;
+			widget.TextEditor.Document.Undone += HandleUndone;
+			widget.TextEditor.Document.Redone += HandleUndone;
+
 			widget.TextEditor.Document.TextReplacing += OnTextReplacing;
 			widget.TextEditor.Document.TextReplaced += OnTextReplaced;
 			widget.TextEditor.Document.ReadOnlyCheckDelegate = CheckReadOnly;
@@ -215,16 +206,12 @@ namespace MonoDevelop.SourceEditor
 			//				this.IsDirty = Document.IsDirty;
 			//			};
 			
-			widget.TextEditor.Caret.PositionChanged += delegate {
-				OnCaretPositionSet (EventArgs.Empty);
-				FireCompletionContextChanged ();
-			};
+			widget.TextEditor.Caret.PositionChanged += HandlePositionChanged; 
 			widget.TextEditor.IconMargin.ButtonPressed += OnIconButtonPress;
 		
 			debugStackLineMarker = new DebugStackLineTextMarker (widget.TextEditor);
 			currentDebugLineMarker = new CurrentDebugLineTextMarker (widget.TextEditor);
 			
-
 			this.WorkbenchWindowChanged += HandleWorkbenchWindowChanged;
 			this.ContentNameChanged += delegate {
 				this.Document.FileName = this.ContentName;
@@ -235,14 +222,18 @@ namespace MonoDevelop.SourceEditor
 			};
 			ClipbardRingUpdated += UpdateClipboardRing;
 			
+			TextEditorService.FileExtensionAdded += HandleFileExtensionAdded;
+			TextEditorService.FileExtensionRemoved += HandleFileExtensionRemoved;
+
+			breakpoints = DebuggingService.Breakpoints;
 			DebuggingService.DebugSessionStarted += OnDebugSessionStarted;
 			DebuggingService.CurrentFrameChanged += currentFrameChanged;
 			DebuggingService.StoppedEvent += currentFrameChanged;
 			DebuggingService.ResumedEvent += currentFrameChanged;
-			DebuggingService.Breakpoints.BreakpointAdded += breakpointAdded;
-			DebuggingService.Breakpoints.BreakpointRemoved += breakpointRemoved;
-			DebuggingService.Breakpoints.BreakpointStatusChanged += breakpointStatusChanged;
-			DebuggingService.Breakpoints.BreakpointModified += breakpointStatusChanged;
+			breakpoints.BreakpointAdded += breakpointAdded;
+			breakpoints.BreakpointRemoved += breakpointRemoved;
+			breakpoints.BreakpointStatusChanged += breakpointStatusChanged;
+			breakpoints.BreakpointModified += breakpointStatusChanged;
 			DebuggingService.PinnedWatches.WatchAdded += OnWatchAdded;
 			DebuggingService.PinnedWatches.WatchRemoved += OnWatchRemoved;
 			DebuggingService.PinnedWatches.WatchChanged += OnWatchChanged;
@@ -256,6 +247,247 @@ namespace MonoDevelop.SourceEditor
 			IdeApp.Preferences.DefaultHideMessageBubblesChanged += HandleIdeAppPreferencesDefaultHideMessageBubblesChanged;
 			Document.AddAnnotation (this);
 			FileRegistry.Add (this);
+		}
+
+		void HandleLineChanged (object sender, LineEventArgs e)
+		{
+			UpdateBreakpoints ();
+			UpdateWidgetPositions ();
+			if (messageBubbleCache != null && messageBubbleCache.RemoveLine (e.Line)) {
+				MessageBubbleTextMarker marker = currentErrorMarkers.FirstOrDefault (m => m.LineSegment == e.Line);
+				if (marker != null) {
+					widget.TextEditor.TextViewMargin.RemoveCachedLine (e.Line);
+					// ensure that the line cache is renewed
+					marker.GetLineHeight (widget.TextEditor);
+				}
+			}
+		}
+
+		void HandleTextReplaced (object sender, DocumentChangeEventArgs args)
+		{
+			if (Document.CurrentAtomicUndoOperationType == OperationType.Format)
+				return;
+			if (!inLoad) {
+				if (widget.TextEditor.Document.IsInAtomicUndo) {
+					wasEdited = true;
+				}
+				else {
+					InformAutoSave ();
+				}
+			}
+
+			int startIndex = args.Offset;
+			foreach (var marker in currentErrorMarkers) {
+				if (marker.LineSegment.Contains (args.Offset) || marker.LineSegment.Contains (args.Offset + args.InsertionLength) || args.Offset < marker.LineSegment.Offset && marker.LineSegment.Offset < args.Offset + args.InsertionLength) {
+					markersToRemove.Enqueue (marker);
+				}
+			}
+			ResetRemoveMarker ();
+		}
+
+		void HandleSyntaxModeChanged (object sender, SyntaxModeChangeEventArgs e)
+		{
+			var oldProvider = e.OldMode as IQuickTaskProvider;
+			if (oldProvider != null)
+				widget.RemoveQuickTaskProvider (oldProvider);
+			var newProvider = e.NewMode as IQuickTaskProvider;
+			if (newProvider != null)
+				widget.AddQuickTaskProvider (newProvider);
+		}
+
+
+		void HandleEndUndo (object sender, TextDocument.UndoOperationEventArgs e)
+		{
+			if (wasEdited)
+				InformAutoSave ();
+		}
+
+		void HandleBeginUndo (object sender, EventArgs e)
+		{
+			wasEdited = false;
+		}
+
+		void HandleUndone (object sender, TextDocument.UndoOperationEventArgs e)
+		{
+			AutoSave.InformAutoSaveThread (Document);
+		}
+
+		void HandlePositionChanged (object sender, DocumentLocationEventArgs e)
+		{
+			OnCaretPositionSet (EventArgs.Empty);
+			FireCompletionContextChanged ();
+		}
+
+		void HandleFileExtensionRemoved (object sender, FileExtensionEventArgs args)
+		{
+			if (ContentName == null || args.Extension.File.FullPath != Path.GetFullPath (ContentName))
+				return;
+			RemoveFileExtension (args.Extension);
+		}
+
+		void HandleFileExtensionAdded (object sender, FileExtensionEventArgs args)
+		{
+			if (ContentName == null || args.Extension.File.FullPath != Path.GetFullPath (ContentName))
+				return;
+			AddFileExtension (args.Extension);
+		}
+
+		Dictionary<TopLevelWidgetExtension,Gtk.Widget> widgetExtensions = new Dictionary<TopLevelWidgetExtension, Widget> ();
+		Dictionary<FileExtension,Tuple<TextLineMarker,DocumentLine>> markerExtensions = new Dictionary<FileExtension, Tuple<TextLineMarker,DocumentLine>> ();
+
+		void LoadExtensions ()
+		{
+			if (ContentName == null)
+				return;
+
+			foreach (var ext in TextEditorService.GetFileExtensions (ContentName))
+				AddFileExtension (ext);
+		}
+
+		void AddFileExtension (FileExtension extension)
+		{
+			if (extension is TopLevelWidgetExtension) {
+				var widgetExtension = (TopLevelWidgetExtension)extension;
+				var w = widgetExtension.CreateWidget ();
+				int x, y;
+				if (!CalcWidgetPosition (widgetExtension, w, out x, out y)) {
+					w.Destroy ();
+					return;
+				}
+
+				widgetExtensions [widgetExtension] = w;
+				widget.TextEditor.TextArea.AddTopLevelWidget (w, x, y);
+				widgetExtension.ScrollToViewRequested += HandleScrollToViewRequested;
+			}
+			else if (extension is TextLineMarkerExtension) {
+				var lineExt = (TextLineMarkerExtension) extension;
+
+				DocumentLine line = widget.TextEditor.Document.GetLine (lineExt.Line);
+				if (line == null)
+					return;
+
+				var marker = lineExt.CreateMarker ();
+				widget.TextEditor.Document.AddMarker (line, marker);
+				widget.TextEditor.QueueDraw ();
+				markerExtensions [extension] = new Tuple<TextLineMarker,DocumentLine> (marker, line);
+			}
+		}
+
+		void HandleScrollToViewRequested (object sender, EventArgs e)
+		{
+			var widgetExtension = (TopLevelWidgetExtension)sender;
+			Gtk.Widget w;
+			if (widgetExtensions.TryGetValue (widgetExtension, out w)) {
+				int x, y;
+				widget.TextEditor.TextArea.GetTopLevelWidgetPosition (w, out x, out y);
+				var size = w.SizeRequest ();
+				Gtk.Application.Invoke (delegate {
+					widget.TextEditor.ScrollTo (new Gdk.Rectangle (x, y, size.Width, size.Height));
+				});
+			}
+		}
+
+		void RemoveFileExtension (FileExtension extension)
+		{
+			if (extension is TopLevelWidgetExtension) {
+				var widgetExtension = (TopLevelWidgetExtension)extension;
+				Gtk.Widget w;
+				if (!widgetExtensions.TryGetValue (widgetExtension, out w))
+					return;
+				widgetExtensions.Remove (widgetExtension);
+				widget.TextEditor.TextArea.Remove (w);
+				w.Destroy ();
+				widgetExtension.ScrollToViewRequested -= HandleScrollToViewRequested;
+			}
+			else if (extension is TextLineMarkerExtension) {
+				Tuple<TextLineMarker,DocumentLine> data;
+				if (markerExtensions.TryGetValue (extension, out data))
+					widget.TextEditor.Document.RemoveMarker (data.Item1);
+			}
+		}
+
+		void ClearExtensions ()
+		{
+			foreach (var ex in widgetExtensions.Keys)
+				ex.ScrollToViewRequested -= HandleScrollToViewRequested;
+		}
+
+		void UpdateWidgetPositions ()
+		{
+			foreach (var e in widgetExtensions) {
+				int x,y;
+				if (CalcWidgetPosition ((TopLevelWidgetExtension)e.Key, e.Value, out x, out y))
+					widget.TextEditor.TextArea.MoveTopLevelWidget (e.Value, x, y);
+				else
+					e.Value.Hide ();
+			}
+		}
+
+		bool CalcWidgetPosition (TopLevelWidgetExtension widgetExtension, Gtk.Widget w, out int x, out int y)
+		{
+			DocumentLine line = widget.TextEditor.Document.GetLine (widgetExtension.Line);
+			if (line == null) {
+				x = y = 0;
+				return false;
+			}
+
+			int lw, lh;
+			var wrapper = widget.TextEditor.TextViewMargin.GetLayout (line);
+			wrapper.Layout.GetPixelSize (out lw, out lh);
+			if (wrapper.IsUncached)
+				wrapper.Dispose ();
+			lh = (int) TextEditor.TextViewMargin.GetLineHeight (widgetExtension.Line);
+			x = (int)widget.TextEditor.TextViewMargin.XOffset + lw + 4;
+			y = (int)widget.TextEditor.LineToY (widgetExtension.Line);
+			int lineStart = (int)widget.TextEditor.TextViewMargin.XOffset;
+			var size = w.SizeRequest ();
+
+			switch (widgetExtension.HorizontalAlignment) {
+			case HorizontalAlignment.LineLeft:
+				x = (int)widget.TextEditor.TextViewMargin.XOffset;
+				break;
+			case HorizontalAlignment.LineRight:
+				x = lineStart + lw + 4;
+				break;
+			case HorizontalAlignment.LineCenter:
+				x = lineStart + (lw - size.Width) / 2;
+				if (x < lineStart)
+					x = lineStart;
+				break;
+			case HorizontalAlignment.Left:
+				x = 0;
+				break;
+			case HorizontalAlignment.Right:
+				break;
+			case HorizontalAlignment.Center:
+				break;
+			case HorizontalAlignment.ViewLeft:
+				break;
+			case HorizontalAlignment.ViewRight:
+				break;
+			case HorizontalAlignment.ViewCenter:
+				break;
+			}
+
+			switch (widgetExtension.VerticalAlignment) {
+			case VerticalAlignment.LineTop:
+				break; // the default
+			case VerticalAlignment.LineBottom:
+				y += lh - size.Height;
+				break;
+			case VerticalAlignment.LineCenter:
+				y = y + (lh - size.Height) / 2;
+				break;
+			case VerticalAlignment.AboveLine:
+				y -= size.Height;
+				break;
+			case VerticalAlignment.BelowLine:
+				y += lh;
+				break;
+			}
+			x += widgetExtension.OffsetX;
+			y += widgetExtension.OffsetY;
+			return true;
 		}
 
 		void HandleWorkbenchWindowChanged (object sender, EventArgs e)
@@ -272,7 +504,7 @@ namespace MonoDevelop.SourceEditor
 			widget.UpdateLineCol ();
 		}
 		
-		MessageBubbleHighlightPopupWindow messageBubbleHighlightPopupWindow = null;
+	//	MessageBubbleHighlightPopupWindow messageBubbleHighlightPopupWindow = null;
 
 		void HandleWidgetTextEditorOptionsChanged (object sender, EventArgs e)
 		{
@@ -295,13 +527,13 @@ namespace MonoDevelop.SourceEditor
 			marker.SetPrimaryError (task.Description);
 			
 			if (TextEditor != null && TextEditor.IsComposited) {
-				if (messageBubbleHighlightPopupWindow != null)
-					messageBubbleHighlightPopupWindow.Destroy ();
-				messageBubbleHighlightPopupWindow = new MessageBubbleHighlightPopupWindow (this, marker);
+				/*if (messageBubbleHighlightPopupWindow != null)
+					messageBubbleHighlightPopupWindow.Destroy ();*/
+			/*	messageBubbleHighlightPopupWindow = new MessageBubbleHighlightPopupWindow (this, marker);
 				messageBubbleHighlightPopupWindow.Destroyed += delegate {
 					messageBubbleHighlightPopupWindow = null;
 				};
-				messageBubbleHighlightPopupWindow.Popup ();
+				messageBubbleHighlightPopupWindow.Popup ();*/
 			}
 		}
 
@@ -346,7 +578,7 @@ namespace MonoDevelop.SourceEditor
 							continue;
 						var marker = currentErrorMarkers.FirstOrDefault (m => m.LineSegment == lineSegment);
 						if (marker != null) {
-							marker.AddError (task.Severity == TaskSeverity.Error, task.Description);
+							marker.AddError (task, task.Severity == TaskSeverity.Error, task.Description);
 							continue;
 						}
 						MessageBubbleTextMarker errorTextMarker = new MessageBubbleTextMarker (messageBubbleCache, task, lineSegment, task.Severity == TaskSeverity.Error, task.Description);
@@ -365,8 +597,8 @@ namespace MonoDevelop.SourceEditor
 			//the window has a reference to the markers we're destroying
 			//so if the error markers get cleared out while it's running, its expose will
 			//NRE and bring down MD
-			if (messageBubbleHighlightPopupWindow != null)
-				messageBubbleHighlightPopupWindow.Destroy ();
+			/*if (messageBubbleHighlightPopupWindow != null)
+				messageBubbleHighlightPopupWindow.Destroy ();*/
 			
 			currentErrorMarkers.ForEach (em => {
 				widget.Document.RemoveMarker (em);
@@ -395,15 +627,18 @@ namespace MonoDevelop.SourceEditor
 				AutoSave.RemoveAutoSaveFile (ContentName);
 
 			if (ContentName != fileName) {
-				if (!FileService.RequestFileEdit (fileName))
-					return;
+				FileService.RequestFileEdit ((FilePath) fileName);
 				writeAllowed = true;
 				writeAccessChecked = true;
 			}
 
 			if (warnOverwrite) {
 				if (fileName == ContentName) {
-					if (MessageService.AskQuestion (GettextCatalog.GetString ("This file {0} has been changed outside of MonoDevelop. Are you sure you want to overwrite the file?", fileName), AlertButton.Cancel, AlertButton.OverwriteFile) != AlertButton.OverwriteFile)
+					string question = GettextCatalog.GetString (
+						"This file {0} has been changed outside of {1}. Are you sure you want to overwrite the file?",
+						fileName, BrandingService.ApplicationName
+					);
+					if (MessageService.AskQuestion (question, AlertButton.Cancel, AlertButton.OverwriteFile) != AlertButton.OverwriteFile)
 						return;
 				}
 				warnOverwrite = false;
@@ -427,6 +662,25 @@ namespace MonoDevelop.SourceEditor
 				if (File.Exists (fileName)) {
 					try {
 						attributes = DesktopService.GetFileAttributes (fileName);
+						var fileAttributes = File.GetAttributes (fileName);
+						if (fileAttributes.HasFlag (FileAttributes.ReadOnly)) {
+							var result = MessageService.AskQuestion (
+								GettextCatalog.GetString ("Can't save file"),
+								GettextCatalog.GetString ("The file was marked as read only. Should the file be overwritten?"),
+								AlertButton.Yes,
+								AlertButton.No);
+							if (result == AlertButton.Yes) {
+								try {
+									File.SetAttributes (fileName, fileAttributes & ~FileAttributes.ReadOnly);
+								} catch (Exception) {
+									MessageService.ShowError (GettextCatalog.GetString ("Error"),
+									                          GettextCatalog.GetString ("Operation failed."));
+									return;
+								}
+							} else {
+								return;
+							}
+						}
 					} catch (Exception e) {
 						LoggingService.LogWarning ("Can't get file attributes", e);
 					}
@@ -464,6 +718,9 @@ namespace MonoDevelop.SourceEditor
 				} catch (Exception e) {
 					LoggingService.LogError ("Can't set file attributes", e);
 				}
+			} catch (UnauthorizedAccessException e) {
+				LoggingService.LogError ("Error while saving file", e);
+				MessageService.ShowError (GettextCatalog.GetString ("Can't save file - access denied"), e.Message);
 			} finally {
 				FileRegistry.SuspendFileWatch = false;
 			}
@@ -489,7 +746,7 @@ namespace MonoDevelop.SourceEditor
 			Document.MimeType = mimeType;
 			string text = null;
 			if (content != null) {
-				text = Mono.TextEditor.Utils.TextFileUtility.GetText (content, out hadBom, out encoding);
+				text = Mono.TextEditor.Utils.TextFileUtility.GetText (content, out encoding, out hadBom);
 				Document.Text = text;
 			}
 			this.CreateDocumentParsedHandler ();
@@ -527,7 +784,7 @@ namespace MonoDevelop.SourceEditor
 			this.WorkbenchWindowChanged += delegate {
 				if (WorkbenchWindow == null)
 					return;
-				WorkbenchWindow.DocumentChanged += delegate {
+				WorkbenchWindow.DocumentChanged +=  delegate {
 					if (WorkbenchWindow.Document == null)
 						return;
 					foreach (var provider in WorkbenchWindow.Document.GetContents<IQuickTaskProvider> ()) {
@@ -536,12 +793,19 @@ namespace MonoDevelop.SourceEditor
 					foreach (var provider in WorkbenchWindow.Document.GetContents<IUsageProvider> ()) {
 						widget.AddUsageTaskProvider (provider);
 					}
-					WorkbenchWindow.Document.DocumentParsed += delegate (object sender, EventArgs e) {
-						widget.UpdateParsedDocument (WorkbenchWindow.Document.ParsedDocument);
-					};
+					ownerDocument = WorkbenchWindow.Document;
+					ownerDocument.DocumentParsed += HandleDocumentParsed;
 				};
 			};
+		}
+
+		MonoDevelop.Ide.Gui.Document ownerDocument;
+
+		void HandleDocumentParsed (object sender, EventArgs e)
+		{
+			widget.UpdateParsedDocument (ownerDocument.ParsedDocument);
 		}		
+
 		public void Load (string fileName, Encoding loadEncoding)
 		{
 			// Handle the "reload" case.
@@ -571,6 +835,7 @@ namespace MonoDevelop.SourceEditor
 					text = Mono.TextEditor.Utils.TextFileUtility.ReadAllText (fileName, loadEncoding, out hadBom);
 				}
 				Document.Text = text;
+				Document.DiffTracker.SetBaseDocument (Document.CreateDocumentSnapshot ());
 				inLoad = false;
 				didLoadCleanly = true;
 			}
@@ -586,42 +851,24 @@ namespace MonoDevelop.SourceEditor
 			UpdateExecutionLocation ();
 			UpdateBreakpoints ();
 			UpdatePinnedWatches ();
+			LoadExtensions ();
 			this.IsDirty = !didLoadCleanly;
 			UpdateTasks (null, null);
-			widget.TextEditor.VAdjustment.Changed += HandleTextEditorVAdjustmentChanged;
+			widget.TextEditor.TextArea.SizeAllocated += HandleTextEditorVAdjustmentChanged;
 			if (didLoadCleanly)
 				Document.InformLoadComplete ();
 		}
 		
 		void HandleTextEditorVAdjustmentChanged (object sender, EventArgs e)
 		{
-			widget.TextEditor.VAdjustment.Changed -= HandleTextEditorVAdjustmentChanged;
+			widget.TextEditor.TextArea.SizeAllocated -= HandleTextEditorVAdjustmentChanged;
 			LoadSettings ();
 		}
-		
-		
-		class Settings
-		{
-			public int CaretOffset { get; set; }
-
-			public double vAdjustment { get; set; }
-
-			public double hAdjustment { get; set; }
-			
-			public Dictionary<int, bool> FoldingStates = new Dictionary<int, bool> ();
-			
-			public override string ToString ()
-			{
-				return string.Format ("[Settings: CaretOffset={0}, vAdjustment={1}, hAdjustment={2}]", CaretOffset, vAdjustment, hAdjustment);
-			}
-		}
-		
-		static Dictionary<string, Settings> settingStore = new Dictionary<string, Settings> ();
 
 		internal void LoadSettings ()
 		{
-			Settings settings;
-			if (widget == null || string.IsNullOrEmpty (ContentName) || !settingStore.TryGetValue (ContentName, out settings))
+			FileSettingsStore.Settings settings;
+			if (widget == null || string.IsNullOrEmpty (ContentName) || !FileSettingsStore.TryGetValue (ContentName, out settings))
 				return;
 			
 			widget.TextEditor.Caret.Offset = settings.CaretOffset;
@@ -643,12 +890,12 @@ namespace MonoDevelop.SourceEditor
 			}
 			if (string.IsNullOrEmpty (ContentName))
 				return;
-			settingStore [ContentName] = new Settings () {
+			FileSettingsStore.Store (ContentName, new FileSettingsStore.Settings () {
 				CaretOffset = widget.TextEditor.Caret.Offset,
 				vAdjustment = widget.TextEditor.VAdjustment.Value,
 				hAdjustment = widget.TextEditor.HAdjustment.Value,
 				FoldingStates = foldingStates
-			};
+			});
 		}
 
 		bool warnOverwrite = false;
@@ -675,6 +922,7 @@ namespace MonoDevelop.SourceEditor
 			UpdateExecutionLocation ();
 			UpdateBreakpoints ();
 			UpdatePinnedWatches ();
+			LoadExtensions ();
 			IsDirty = false;
 			Document.InformLoadComplete ();
 		}
@@ -701,9 +949,10 @@ namespace MonoDevelop.SourceEditor
 		public Encoding SourceEncoding {
 			get { return encoding; }
 		}
-		
+
 		public override void Dispose ()
 		{
+			ClearExtensions ();
 			FileRegistry.Remove (this);
 			RemoveAutoSaveTimer ();
 			
@@ -712,8 +961,8 @@ namespace MonoDevelop.SourceEditor
 			this.isDisposed = true;
 			Counters.LoadedEditors--;
 			
-			if (messageBubbleHighlightPopupWindow != null)
-				messageBubbleHighlightPopupWindow.Destroy ();
+		/*	if (messageBubbleHighlightPopupWindow != null)
+				messageBubbleHighlightPopupWindow.Destroy ();*/
 
 			IdeApp.Preferences.DefaultHideMessageBubblesChanged -= HandleIdeAppPreferencesDefaultHideMessageBubblesChanged;
 			IdeApp.Preferences.ShowMessageBubblesChanged -= HandleIdeAppPreferencesShowMessageBubblesChanged;
@@ -723,19 +972,31 @@ namespace MonoDevelop.SourceEditor
 			
 			ClipbardRingUpdated -= UpdateClipboardRing;
 
+			widget.TextEditor.Document.SyntaxModeChanged -= HandleSyntaxModeChanged;
+			widget.TextEditor.Document.TextReplaced -= HandleTextReplaced;
+			widget.TextEditor.Document.LineChanged -= HandleLineChanged;
+			widget.TextEditor.Document.BeginUndo -= HandleBeginUndo; 
+			widget.TextEditor.Document.EndUndo -= HandleEndUndo;
+			widget.TextEditor.Document.Undone -= HandleUndone;
+			widget.TextEditor.Document.Redone -= HandleUndone;
+			widget.TextEditor.Caret.PositionChanged -= HandlePositionChanged; 
+			widget.TextEditor.IconMargin.ButtonPressed -= OnIconButtonPress;
 			widget.TextEditor.Document.TextReplacing -= OnTextReplacing;
-			widget.TextEditor.Document.TextReplacing -= OnTextReplaced;
+			widget.TextEditor.Document.TextReplaced -= OnTextReplaced;
 			widget.TextEditor.Document.ReadOnlyCheckDelegate = null;
 			widget.TextEditor.Options.Changed -= HandleWidgetTextEditorOptionsChanged;
+
+			TextEditorService.FileExtensionAdded -= HandleFileExtensionAdded;
+			TextEditorService.FileExtensionRemoved -= HandleFileExtensionRemoved;
 
 			DebuggingService.DebugSessionStarted -= OnDebugSessionStarted;
 			DebuggingService.CurrentFrameChanged -= currentFrameChanged;
 			DebuggingService.StoppedEvent -= currentFrameChanged;
 			DebuggingService.ResumedEvent -= currentFrameChanged;
-			DebuggingService.Breakpoints.BreakpointAdded -= breakpointAdded;
-			DebuggingService.Breakpoints.BreakpointRemoved -= breakpointRemoved;
-			DebuggingService.Breakpoints.BreakpointStatusChanged -= breakpointStatusChanged;
-			DebuggingService.Breakpoints.BreakpointModified -= breakpointStatusChanged;
+			breakpoints.BreakpointAdded -= breakpointAdded;
+			breakpoints.BreakpointRemoved -= breakpointRemoved;
+			breakpoints.BreakpointStatusChanged -= breakpointStatusChanged;
+			breakpoints.BreakpointModified -= breakpointStatusChanged;
 			DebuggingService.PinnedWatches.WatchAdded -= OnWatchAdded;
 			DebuggingService.PinnedWatches.WatchRemoved -= OnWatchRemoved;
 			DebuggingService.PinnedWatches.WatchChanged -= OnWatchChanged;
@@ -755,6 +1016,12 @@ namespace MonoDevelop.SourceEditor
 			breakpointRemoved = null;
 			breakpointStatusChanged = null;
 
+			if (ownerDocument != null) {
+				ownerDocument.DocumentParsed -= HandleDocumentParsed;
+				ownerDocument = null;
+			}
+
+			RemoveMarkerQueue ();
 		}
 		
 		public Ambience GetAmbience ()
@@ -768,7 +1035,7 @@ namespace MonoDevelop.SourceEditor
 		{
 			if (!writeAccessChecked && !IsUntitled) {
 				writeAccessChecked = true;
-				writeAllowed = FileService.RequestFileEdit (ContentName);
+				writeAllowed = FileService.RequestFileEdit (ContentName, false);
 			}
 			return IsUntitled || writeAllowed;
 		}
@@ -805,7 +1072,7 @@ namespace MonoDevelop.SourceEditor
 				}
 			}
 			if (lines != 0)
-				TextFileService.FireLineCountChanged (this, location.Line, lines, location.Column);
+				TextEditorService.NotifyLineCountChanged (this, location.Line, lines, location.Column);
 		}
 
 		void OnCurrentFrameChanged (object s, EventArgs args)
@@ -878,7 +1145,7 @@ namespace MonoDevelop.SourceEditor
 		void UpdatePinnedWatches ()
 		{
 			foreach (PinnedWatchInfo wi in pinnedWatches) {
-				widget.TextEditorContainer.Remove (wi.Widget);
+				widget.TextEditor.Remove (wi.Widget);
 				wi.Widget.Destroy ();
 			}
 			pinnedWatches.Clear ();
@@ -900,10 +1167,13 @@ namespace MonoDevelop.SourceEditor
 			if (w.OffsetX < 0) {
 				w.OffsetY = (int)widget.TextEditor.LineToY (w.Line);
 				int lw, lh;
-				widget.TextEditor.TextViewMargin.GetLayout (line).Layout.GetPixelSize (out lw, out lh);
+				var wrapper = widget.TextEditor.TextViewMargin.GetLayout (line);
+				wrapper.Layout.GetPixelSize (out lw, out lh);
+				if (wrapper.IsUncached)
+					wrapper.Dispose ();
 				w.OffsetX = (int)widget.TextEditor.TextViewMargin.XOffset + lw + 4;
 			}
-			wi.Widget = new PinnedWatchWidget (widget.TextEditorContainer, w);
+			wi.Widget = new PinnedWatchWidget (widget.TextEditor, w);
 			
 //			wi.Marker = new DebugValueMarker (widget.TextEditor, line, w);
 			wi.Watch = w;
@@ -911,7 +1181,7 @@ namespace MonoDevelop.SourceEditor
 //			if (w.Value != null)
 //				wi.Marker.AddValue (w.Value);
 
-			widget.TextEditorContainer.AddTopLevelWidget (wi.Widget, w.OffsetX, w.OffsetY);
+			widget.TextEditor.AddTopLevelWidget (wi.Widget, w.OffsetX, w.OffsetY);
 			
 //			widget.TextEditor.QueueDraw ();
 		}
@@ -919,6 +1189,17 @@ namespace MonoDevelop.SourceEditor
 		void OnDebugSessionStarted (object sender, EventArgs e)
 		{
 			UpdatePinnedWatches ();
+			foreach (var marker in currentErrorMarkers) {
+				marker.IsVisible = false;
+			}
+			DebuggingService.DebuggerSession.TargetExited += HandleTargetExited;
+		}
+
+		void HandleTargetExited (object sender, EventArgs e)
+		{
+			foreach (var marker in currentErrorMarkers) {
+				marker.IsVisible = true;
+			}
 		}
 		
 		void OnWatchAdded (object s, PinnedWatchEventArgs args)
@@ -932,7 +1213,7 @@ namespace MonoDevelop.SourceEditor
 			foreach (PinnedWatchInfo wi in pinnedWatches) {
 				if (wi.Watch == args.Watch) {
 					pinnedWatches.Remove (wi);
-					widget.TextEditorContainer.Remove (wi.Widget);
+					widget.TextEditor.Remove (wi.Widget);
 					wi.Widget.Destroy ();
 					break;
 				}
@@ -944,7 +1225,7 @@ namespace MonoDevelop.SourceEditor
 			foreach (PinnedWatchInfo wi in pinnedWatches) {
 				if (wi.Watch == args.Watch) {
 					wi.Widget.ObjectValue = wi.Watch.Value;
-					widget.TextEditorContainer.MoveTopLevelWidget (wi.Widget, args.Watch.OffsetX, args.Watch.OffsetY);
+					widget.TextEditor.MoveTopLevelWidget (wi.Widget, args.Watch.OffsetX, args.Watch.OffsetY);
 					break;
 				}
 			}
@@ -957,15 +1238,18 @@ namespace MonoDevelop.SourceEditor
 			if (!forceUpdate) {
 				int i = 0, count = 0;
 				bool mismatch = false;
-				foreach (Breakpoint bp in DebuggingService.Breakpoints.GetBreakpointsAtFile (fp.FullPath)) {
-					count++;
-					if (i < breakpointSegments.Count) {
-						int lineNumber = widget.TextEditor.Document.OffsetToLineNumber (breakpointSegments [i].Offset);
-						if (lineNumber != bp.Line) {
-							mismatch = true;
-							break;
+
+				lock (breakpoints) {
+					foreach (var bp in breakpoints.GetBreakpointsAtFile (fp.FullPath)) {
+						count++;
+						if (i < breakpointSegments.Count) {
+							int lineNumber = widget.TextEditor.Document.OffsetToLineNumber (breakpointSegments [i].Offset);
+							if (lineNumber != bp.Line) {
+								mismatch = true;
+								break;
+							}
+							i++;
 						}
-						i++;
 					}
 				}
 				
@@ -985,9 +1269,12 @@ namespace MonoDevelop.SourceEditor
 			}
 			
 			breakpointSegments.Clear ();
-			foreach (Breakpoint bp in DebuggingService.Breakpoints.GetBreakpointsAtFile (fp.FullPath)) {
-				lineNumbers.Add (bp.Line);
-				AddBreakpoint (bp);
+
+			lock (breakpoints) {
+				foreach (Breakpoint bp in breakpoints.GetBreakpointsAtFile (fp.FullPath)) {
+					lineNumbers.Add (bp.Line);
+					AddBreakpoint (bp);
+				}
 			}
 			
 			foreach (int lineNumber in lineNumbers) {
@@ -1005,25 +1292,24 @@ namespace MonoDevelop.SourceEditor
 		{
 			if (DebuggingService.PinnedWatches.IsWatcherBreakpoint (bp))
 				return;
+
 			FilePath fp = Name;
 			if (fp.FullPath == bp.FileName) {
 				DocumentLine line = widget.TextEditor.Document.GetLine (bp.Line);
 				var status = bp.GetStatus (DebuggingService.DebuggerSession);
-				
+				bool tracepoint = bp.HitAction != HitAction.Break;
+
 				if (line == null)
 					return;
+
 				if (!bp.Enabled) {
-					if (bp.HitAction == HitAction.Break)
-						widget.TextEditor.Document.AddMarker (line, new DisabledBreakpointTextMarker (widget.TextEditor, false));
-					else
-						widget.TextEditor.Document.AddMarker (line, new DisabledBreakpointTextMarker (widget.TextEditor, true));
+					widget.TextEditor.Document.AddMarker (line, new DisabledBreakpointTextMarker (widget.TextEditor, tracepoint));
 				} else if (status == BreakEventStatus.Bound || status == BreakEventStatus.Disconnected) {
-					if (bp.HitAction == HitAction.Break)
-						widget.TextEditor.Document.AddMarker (line, new BreakpointTextMarker (widget.TextEditor, false));
-					else
-						widget.TextEditor.Document.AddMarker (line, new BreakpointTextMarker (widget.TextEditor, true));
-				} else
-					widget.TextEditor.Document.AddMarker (line, new InvalidBreakpointTextMarker (widget.TextEditor));
+					widget.TextEditor.Document.AddMarker (line, new BreakpointTextMarker (widget.TextEditor, tracepoint));
+				} else {
+					widget.TextEditor.Document.AddMarker (line, new InvalidBreakpointTextMarker (widget.TextEditor, tracepoint));
+				}
+
 				widget.TextEditor.QueueDraw ();
 				breakpointSegments.Add (line);
 			}
@@ -1072,14 +1358,26 @@ namespace MonoDevelop.SourceEditor
 		{
 			if (args.LineNumber < DocumentLocation.MinLine)
 				return;
+
 			if (args.TriggersContextMenu ()) {
-				TextEditor.Caret.Line = args.LineNumber;
-				TextEditor.Caret.Column = 1;
-				IdeApp.CommandService.ShowContextMenu (TextEditor, args.RawEvent as Gdk.EventButton, "/MonoDevelop/SourceEditor2/IconContextMenu/Editor");
+				if (TextEditor.Caret.Line != args.LineNumber) {
+					TextEditor.Caret.Line = args.LineNumber;
+					TextEditor.Caret.Column = 1;
+				}
+
+				IdeApp.CommandService.ShowContextMenu (
+					TextEditor,
+					args.RawEvent as Gdk.EventButton,
+					WorkbenchWindow.ExtensionContext ?? AddinManager.AddinEngine,
+					"/MonoDevelop/SourceEditor2/IconContextMenu/Editor");
 			} else if (args.Button == 1) {
 				if (!string.IsNullOrEmpty (this.Document.FileName)) {
-					if (args.LineSegment != null)
-						DebuggingService.Breakpoints.Toggle (this.Document.FileName, args.LineNumber);
+					if (args.LineSegment != null) {
+						int column = TextEditor.Caret.Line == args.LineNumber ? TextEditor.Caret.Column : 1;
+
+						lock (breakpoints)
+							breakpoints.Toggle (this.Document.FileName, args.LineNumber, column);
+					}
 				}
 			}
 		}
@@ -1135,7 +1433,7 @@ namespace MonoDevelop.SourceEditor
 			}*/
 			if (MiscActions.CancelPreEditMode (TextEditor.GetTextEditorData ()))
 				return;
-			this.Document.Undo ();
+			MiscActions.Undo (this.TextEditor.GetTextEditorData ());
 		}
 		
 		public bool EnableRedo {
@@ -1165,7 +1463,7 @@ namespace MonoDevelop.SourceEditor
 		{
 			if (MiscActions.CancelPreEditMode (TextEditor.GetTextEditorData ()))
 				return;
-			this.Document.Redo ();
+			MiscActions.Redo (this.TextEditor.GetTextEditorData ());
 		}
 		
 		public IDisposable OpenUndoGroup ()
@@ -1197,7 +1495,11 @@ namespace MonoDevelop.SourceEditor
 		public bool HasInputFocus {
 			get { return TextEditor.HasFocus; }
 		}
-		
+
+		public void RunWhenLoaded (System.Action action)
+		{
+			Document.RunWhenLoaded (action);
+		}
 		#endregion
 		
 		#region ITextBuffer
@@ -1252,8 +1554,6 @@ namespace MonoDevelop.SourceEditor
 			set {
 				this.IsDirty = true;
 				this.widget.TextEditor.Document.Text = value;
-				if (TextChanged != null)
-					TextChanged (this, new TextChangedEventArgs (0, Length));
 			}
 		}
 		
@@ -1354,7 +1654,7 @@ namespace MonoDevelop.SourceEditor
 		#region IClipboardHandler
 		public bool EnableCut {
 			get {
-				return widget.EditorHasFocus;
+				return !widget.SearchWidgetHasFocus;
 			}
 		}
 
@@ -1366,19 +1666,19 @@ namespace MonoDevelop.SourceEditor
 
 		public bool EnablePaste {
 			get {
-				return widget.EditorHasFocus;
+				return EnableCut;
 			}
 		}
 
 		public bool EnableDelete {
 			get {
-				return widget.EditorHasFocus;
+				return EnableCut;
 			}
 		}
 
 		public bool EnableSelectAll {
 			get {
-				return widget.EditorHasFocus;
+				return EnableCut;
 			}
 		}
 		
@@ -1466,13 +1766,21 @@ namespace MonoDevelop.SourceEditor
 		{
 			CodeCompletionContext result = new CodeCompletionContext ();
 			result.TriggerOffset = triggerOffset;
-			DocumentLocation loc = Document.OffsetToLocation (triggerOffset);
+			DocumentLocation loc = widget.TextEditor.Caret.Location;
 			result.TriggerLine = loc.Line;
 			result.TriggerLineOffset = loc.Column - 1;
-			var p = DocumentToScreenLocation (loc);
-			result.TriggerXCoord = p.X;
-			result.TriggerYCoord = p.Y;
-			result.TriggerTextHeight = (int)TextEditor.LineHeight;
+/*			var p = new Cairo.Point ((int)this.widget.TextEditor.TextViewMargin.CaretVisualLocation.X,
+			                         (int)this.widget.TextEditor.TextViewMargin.CaretVisualLocation.Y);
+			if (widget.TextEditor.Caret.Location.Column == loc.Column)*/
+			var p = this.widget.TextEditor.LocationToPoint (loc);
+			int tx, ty;
+			widget.TextEditor.ParentWindow.GetOrigin (out tx, out ty);
+			tx += widget.TextEditor.Allocation.X + (int)p.X;
+			ty += widget.TextEditor.Allocation.Y + (int)p.Y + (int)TextEditor.LineHeight;
+
+			result.TriggerXCoord = tx;
+			result.TriggerYCoord = ty;
+			result.TriggerTextHeight = (int)TextEditor.GetLineHeight (loc.Line);
 			return result;
 		}
 		
@@ -1481,8 +1789,8 @@ namespace MonoDevelop.SourceEditor
 			var p = widget.TextEditor.LocationToPoint (location);
 			int tx, ty;
 			widget.Vbox.ParentWindow.GetOrigin (out tx, out ty);
-			tx += widget.TextEditorContainer.Allocation.X + p.X;
-			ty += widget.TextEditorContainer.Allocation.Y + p.Y + (int)TextEditor.LineHeight;
+			tx += widget.TextEditor.Allocation.X + p.X;
+			ty += widget.TextEditor.Allocation.Y + p.Y + (int)TextEditor.LineHeight;
 			return new Gdk.Point (tx, ty);
 		}
 		
@@ -1509,8 +1817,16 @@ namespace MonoDevelop.SourceEditor
 		{
 			if (data == null || data.Document == null)
 				return;
+
 			int triggerOffset = ctx.TriggerOffset;
 			int length = String.IsNullOrEmpty (partial_word) ? 0 : partial_word.Length;
+
+			// for named arguments invoke(arg:<Expr>);
+			if (complete_word.EndsWith (":", StringComparison.Ordinal)) {
+				if (data.GetCharAt (triggerOffset + length) == ':')
+					length++;
+			}
+
 			bool blockMode = false;
 			if (data.IsSomethingSelected) {
 				blockMode = data.MainSelection.SelectionMode == Mono.TextEditor.SelectionMode.Block;
@@ -1546,9 +1862,11 @@ namespace MonoDevelop.SourceEditor
 						data.Replace (offset, length, complete_word);
 					}
 					int minColumn = System.Math.Min (data.MainSelection.Anchor.Column, data.MainSelection.Lead.Column);
-					data.MainSelection.Anchor = new DocumentLocation (data.Caret.Line == minLine ? maxLine : minLine, minColumn);
-					data.MainSelection.Lead = data.Caret.Location;
-					
+					data.MainSelection = data.MainSelection.WithRange (
+						new DocumentLocation (data.Caret.Line == minLine ? maxLine : minLine, minColumn),
+						data.Caret.Location
+					);
+
 					data.Document.CommitMultipleLineUpdate (data.MainSelection.MinLine, data.MainSelection.MaxLine);
 					data.Caret.PreserveSelection = false;
 				}
@@ -1587,23 +1905,24 @@ namespace MonoDevelop.SourceEditor
 		
 		#region commenting and indentation
 
-		[CommandHandler (MonoDevelop.Debugger.DebugCommands.ExpressionEvaluator)]
+		[CommandHandler (DebugCommands.ExpressionEvaluator)]
 		protected void ShowExpressionEvaluator ()
 		{
 			string expression = "";
-			if (TextEditor.IsSomethingSelected)
+
+			if (TextEditor.IsSomethingSelected) {
 				expression = TextEditor.SelectedText;
-			else {
+			} else {
 				DomRegion region;
 				var rr = TextEditor.GetLanguageItem (TextEditor.Caret.Offset, out region);
 				if (rr != null && !rr.IsError)
 					expression = TextEditor.GetTextBetween (region.Begin, region.End);
 			}
-			if (!string.IsNullOrEmpty (expression))
-				DebuggingService.ShowExpressionEvaluator (expression);
+
+			DebuggingService.ShowExpressionEvaluator (expression);
 		}
 
-		[CommandUpdateHandler (MonoDevelop.Debugger.DebugCommands.ExpressionEvaluator)]
+		[CommandUpdateHandler (DebugCommands.ExpressionEvaluator)]
 		protected void UpdateShowExpressionEvaluator (CommandInfo cinfo)
 		{
 			if (DebuggingService.IsDebugging)
@@ -1664,12 +1983,23 @@ namespace MonoDevelop.SourceEditor
 		
 		public void FoldDefinitions ()
 		{
+			bool toggle = true;
+
 			foreach (FoldSegment segment in Document.FoldSegments) {
-				if (segment.FoldingType == FoldingType.TypeDefinition)
-					segment.IsFolded = false;
 				if (segment.FoldingType == FoldingType.TypeMember || segment.FoldingType == FoldingType.Comment)
-					segment.IsFolded = true;
+					if (segment.IsFolded)
+						toggle = false;
 			}
+
+
+			foreach (FoldSegment segment in Document.FoldSegments) {
+				if (segment.FoldingType == FoldingType.TypeDefinition) {
+					segment.IsFolded = false;
+				}
+				if (segment.FoldingType == FoldingType.TypeMember || segment.FoldingType == FoldingType.Comment)
+					segment.IsFolded = toggle;
+			}
+
 			widget.TextEditor.Caret.MoveCaretBeforeFoldings ();
 			Document.RequestUpdate (new UpdateAll ());
 			Document.CommitDocumentUpdate ();
@@ -1870,7 +2200,7 @@ namespace MonoDevelop.SourceEditor
 		
 		public Gtk.TargetEntry[] DragTargets { 
 			get {
-				return (Gtk.TargetEntry[])ClipboardActions.CopyOperation.targetList;
+				return ClipboardActions.CopyOperation.TargetEntries;
 			}
 		}
 				
@@ -1992,7 +2322,14 @@ namespace MonoDevelop.SourceEditor
 				formatter.CorrectIndenting (policies, editorData, TextEditor.Caret.Line);
 			}
 		}
-		
+
+		[CommandUpdateHandler (TextEditorCommands.MoveBlockUp)]
+		[CommandUpdateHandler (TextEditorCommands.MoveBlockDown)]
+		void MoveBlockUpdateHandler (CommandInfo cinfo)
+		{
+			cinfo.Enabled = widget.EditorHasFocus;
+		}
+
 		[CommandHandler (TextEditorCommands.MoveBlockUp)]
 		protected void OnMoveBlockUp ()
 		{
@@ -2078,13 +2415,20 @@ namespace MonoDevelop.SourceEditor
 		{
 			widget.ShowGotoLineNumberWidget ();
 		}
-		
+
 		[CommandHandler (SearchCommands.FindNext)]
 		public SearchResult FindNext ()
 		{
 			return widget.FindNext ();
 		}
-		
+
+		[CommandUpdateHandler (SearchCommands.FindNext)]
+		[CommandUpdateHandler (SearchCommands.FindPrevious)]
+		void UpdateFindNextAndPrev (CommandInfo cinfo)
+		{
+			cinfo.Enabled = !string.IsNullOrEmpty (widget.TextEditor.SearchPattern);
+		}
+
 		[CommandHandler (SearchCommands.FindPrevious)]
 		public SearchResult FindPrevious ()
 		{
@@ -2161,6 +2505,33 @@ namespace MonoDevelop.SourceEditor
 		{
 			TextEditor.InsertAtCaret (Guid.NewGuid ().ToString ());
 		}
+
+		[CommandHandler (SourceEditorCommands.NextIssue)]
+		void NextIssue ()
+		{
+			widget.NextIssue ();
+		}	
+
+		[CommandHandler (SourceEditorCommands.PrevIssue)]
+		void PrevIssue ()
+		{
+			widget.PrevIssue ();
+		}
+
+		[CommandHandler (SourceEditorCommands.NextIssueError)]
+		void NextIssueError ()
+		{
+			widget.NextIssueError ();
+		}	
+
+		[CommandHandler (SourceEditorCommands.PrevIssueError)]
+		void PrevIssueError ()
+		{
+			widget.PrevIssueError ();
+		}
+
+
+
 		#endregion
 	}
 } 

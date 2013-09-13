@@ -55,7 +55,7 @@ namespace MonoDevelop.Ide.Gui.Pads
 	{
 		HPaned control;
 		ScrolledWindow sw;
-		MonoDevelop.Ide.Gui.Components.PadTreeView view;
+		PadTreeView view;
 		LogView outputView;
 		ListStore store;
 		TreeModelFilter filter;
@@ -113,14 +113,13 @@ namespace MonoDevelop.Ide.Gui.Pads
 
 		void IPadContent.Initialize (IPadWindow window)
 		{
-			window.Title = GettextCatalog.GetString ("Error List");
-			window.Icon = MonoDevelop.Ide.Gui.Stock.Error;
-			
+			window.Title = GettextCatalog.GetString ("Errors");
+
 			DockItemToolbar toolbar = window.GetToolbar (PositionType.Top);
 			
 			errorBtn = new ToggleButton ();
 			errorBtn.Active = (bool)PropertyService.Get (showErrorsPropertyName, true);
-			errorBtn.Image = new Gtk.Image (Gtk.Stock.DialogError, Gtk.IconSize.Menu);
+			errorBtn.Image = new Gtk.Image (Stock.Error, Gtk.IconSize.Menu);
 			errorBtn.Image.Show ();
 			errorBtn.Toggled += new EventHandler (FilterChanged);
 			errorBtn.TooltipText = GettextCatalog.GetString ("Show Errors");
@@ -129,7 +128,7 @@ namespace MonoDevelop.Ide.Gui.Pads
 			
 			warnBtn = new ToggleButton ();
 			warnBtn.Active = (bool)PropertyService.Get (showWarningsPropertyName, true);
-			warnBtn.Image = new Gtk.Image (Gtk.Stock.DialogWarning, Gtk.IconSize.Menu);
+			warnBtn.Image = new Gtk.Image (Stock.Warning, Gtk.IconSize.Menu);
 			warnBtn.Image.Show ();
 			warnBtn.Toggled += new EventHandler (FilterChanged);
 			warnBtn.TooltipText = GettextCatalog.GetString ("Show Warnings");
@@ -175,7 +174,7 @@ namespace MonoDevelop.Ide.Gui.Pads
 			sort.SetSortFunc (VisibleColumns.Project, ProjectIterSort);
 			sort.SetSortFunc (VisibleColumns.File, FileIterSort);
 			
-			view = new MonoDevelop.Ide.Gui.Components.PadTreeView (sort);
+			view = new PadTreeView (sort);
 			view.RulesHint = true;
 			view.DoPopupMenu = (evnt) => IdeApp.CommandService.ShowContextMenu (view, evnt, CreateMenu ());
 			AddColumns ();
@@ -197,8 +196,8 @@ namespace MonoDevelop.Ide.Gui.Pads
 			
 			view.RowActivated += new RowActivatedHandler (OnRowActivated);
 			
-			iconWarning = sw.RenderIcon (Gtk.Stock.DialogWarning, Gtk.IconSize.Menu, "");
-			iconError = sw.RenderIcon (Gtk.Stock.DialogError, Gtk.IconSize.Menu, "");
+			iconWarning = sw.RenderIcon (Stock.Warning, Gtk.IconSize.Menu, "");
+			iconError = sw.RenderIcon (Stock.Error, Gtk.IconSize.Menu, "");
 			iconInfo = sw.RenderIcon (Gtk.Stock.DialogInfo, Gtk.IconSize.Menu, "");
 			
 			control.Add1 (sw);
@@ -689,6 +688,8 @@ namespace MonoDevelop.Ide.Gui.Pads
 		private void Clear()
 		{
 			errorCount = warningCount = infoCount = 0;
+			if (view.IsRealized)
+				view.ScrollToPoint (0, 0);
 			store.Clear ();
 			tasks.Clear ();
 			UpdateErrorsNum ();

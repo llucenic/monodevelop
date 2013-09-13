@@ -24,8 +24,6 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using System;
-using MonoDevelop.Core;
 using MonoDevelop.VersionControl.Views;
 using MonoDevelop.Ide.Gui;
 
@@ -34,7 +32,7 @@ namespace MonoDevelop.VersionControl {
 	public interface IVersionControlViewHandler<T>
 		where T : IAttachableViewContent
 	{
-		bool CanHandle (VersionControlItem item, IViewContent primaryView);
+		bool CanHandle (VersionControlItem item, DocumentView primaryView);
 		T CreateView (VersionControlDocumentInfo info);
 	}
 	

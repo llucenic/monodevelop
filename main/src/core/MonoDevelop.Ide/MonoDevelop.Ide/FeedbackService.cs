@@ -97,7 +97,7 @@ namespace MonoDevelop.Ide
 			PropertyService.Set ("MonoDevelop.Feedback.Email", email);
 			PropertyService.SaveProperties ();
 			
-			string header = "MonoDevelop: " + BuildVariables.PackageVersionLabel + "\n";
+			string header = "MonoDevelop: " + BuildInfo.VersionLabel + "\n";
 			
 			Type t = Type.GetType ("Mono.Runtime");
 			if (t != null) {
@@ -114,7 +114,7 @@ namespace MonoDevelop.Ide
 			string os = Platform.IsMac ? "Mac OSX" : (Platform.IsWindows ? "Windows" : "Linux");
 			header += "Operating System: " + os + " (" + Environment.OSVersion + ")\n";
 			header += "Distributor: " + PropertyService.Get <string> ("MonoDevelop.Distributor", "Xamarin") + "\n";
-			header += SystemInformation.ToText ();
+			header += SystemInformation.GetTextDescription ();
 			body = header + "\n" + body;
 			
 			lock (sendingLock) {

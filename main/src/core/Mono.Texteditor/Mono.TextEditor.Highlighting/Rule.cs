@@ -88,6 +88,12 @@ namespace Mono.TextEditor.Highlighting
 			get {
 				return keywords;
 			}
+			set {
+				keywords = new List<Mono.TextEditor.Highlighting.Keywords> (value);
+				keywordTable = null;
+				keywordTableIgnoreCase = null;
+				keywords.ForEach (kw => UpdateKeywordTable (kw));
+			}
 		}
 		
 		public Span[] Spans {
@@ -110,7 +116,7 @@ namespace Mono.TextEditor.Highlighting
 		
 		public bool IgnoreCase {
 			get;
-			internal protected set;
+			set;
 		}
 		
 		public string DefaultColor {
@@ -119,11 +125,25 @@ namespace Mono.TextEditor.Highlighting
 		}
 		
 		string delimiter;
-		public string Delimiter {
-			get { 
-				return string.IsNullOrEmpty (delimiter) ? mode.Delimiter : delimiter; 
+		bool delimiterSet;
+
+		public string GetDelimiter (SyntaxMode mode)
+		{
+			if (mode == null)
+				return delimiter;
+			return !delimiterSet ? mode.GetDelimiter (null) : delimiter; 
+		}
+
+		public void SetDelimiter (string value)
+		{
+			delimiter = value;
+			delimiterSet = true; 
+		}
+
+		public bool HasDelimiter {
+			get {
+				return delimiterSet;
 			}
-			internal protected set { delimiter = value; }
 		}
 
 		public Marker[] PrevMarker {
@@ -132,16 +152,18 @@ namespace Mono.TextEditor.Highlighting
 			}
 		}
 		
-		SyntaxMode mode;
-		
-		public Rule (SyntaxMode mode)
+		public Rule ()
 		{
-			this.mode = mode;
+		}
+
+		[Obsolete("This constructor is obsolete use parameterless constructor instead.")]
+		public Rule (SyntaxMode obsolteMode)
+		{
 		}
 		
 		public virtual Rule GetRule (TextDocument doc, string name)
 		{
-			return mode.GetRule (doc, name);
+			return (doc.SyntaxMode as SyntaxMode).GetRule (doc, name);
 		}
 		
 		public override string ToString ()
@@ -209,12 +231,35 @@ namespace Mono.TextEditor.Highlighting
 				return result;
 			return null;
 		}
+
+		void UpdateKeywordTable (Keywords keywords)
+		{
+			foreach (string word in keywords.Words) {
+				if (keywords.IgnoreCase) {
+					if (keywordTableIgnoreCase == null)
+						keywordTableIgnoreCase = new Dictionary<string, Keywords> (StringComparer.InvariantCultureIgnoreCase);
+					if (keywordTableIgnoreCase.ContainsKey (word)) {
+						Console.WriteLine ("Error: duplicate keyword " + word);
+						continue;
+					}
+					keywordTableIgnoreCase.Add (word, keywords);
+				} else {
+					if (keywordTable == null)
+						keywordTable = new Dictionary<string, Keywords> ();
+					if (keywordTable.ContainsKey (word)) {
+						Console.WriteLine ("Error: duplicate keyword " + word);
+						continue;
+					}
+					keywordTable.Add (word, keywords);
+				}
+			}
+		}
 		
 		protected bool ReadNode (XmlReader reader, List<Match> matchList, List<Span> spanList, List<Marker> prevMarkerList)
 		{
 			switch (reader.LocalName) {
 			case "Delimiters":
-				this.Delimiter = reader.ReadElementString ();
+				this.SetDelimiter (reader.ReadElementString ());
 				return true;
 			case "Property":
 				string name = reader.GetAttribute ("name");
@@ -234,25 +279,7 @@ namespace Mono.TextEditor.Highlighting
 			case Mono.TextEditor.Highlighting.Keywords.Node:
 				Keywords keywords = Mono.TextEditor.Highlighting.Keywords.Read (reader, IgnoreCase);
 				this.keywords.Add (keywords);
-				foreach (string word in keywords.Words) {
-					if (keywords.IgnoreCase) {
-						if (keywordTableIgnoreCase == null)
-							keywordTableIgnoreCase = new Dictionary<string, Keywords> (StringComparer.InvariantCultureIgnoreCase);
-						if (keywordTableIgnoreCase.ContainsKey (word)) {
-							Console.WriteLine ("Error: duplicate keyword " + word);
-							continue;
-						}
-						keywordTableIgnoreCase.Add (word, keywords);
-					} else {
-						if (keywordTable == null)
-							keywordTable = new Dictionary<string, Keywords> ();
-						if (keywordTable.ContainsKey (word)) {
-							Console.WriteLine ("Error: duplicate keyword " + word);
-							continue;
-						}
-						keywordTable.Add (word, keywords);
-					}
-				}
+				UpdateKeywordTable (keywords);
 				return true;
 			case Marker.PrevMarker:
 				prevMarkerList.Add (Marker.Read (reader));
@@ -323,7 +350,7 @@ namespace Mono.TextEditor.Highlighting
 		public const string Node = "Rule";
 		public static Rule Read (SyntaxMode mode, XmlReader reader, bool ignoreCaseDefault)
 		{
-			Rule result = new Rule (mode);
+			Rule result = new Rule ();
 			result.Name         = reader.GetAttribute ("name");
 			result.DefaultColor = reader.GetAttribute ("color");
 			result.IgnoreCase   = ignoreCaseDefault;

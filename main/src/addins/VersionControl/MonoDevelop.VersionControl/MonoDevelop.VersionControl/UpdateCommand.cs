@@ -1,15 +1,5 @@
-using System;
 using System.Linq;
-using System.Collections;
-using System.IO;
-
-using Gtk;
-
-using MonoDevelop.Projects;
-using MonoDevelop.Ide.Gui.Pads;
 using MonoDevelop.Core;
-using MonoDevelop.Components.Commands;
-using MonoDevelop.Components;
 
 namespace MonoDevelop.VersionControl
 {
@@ -31,6 +21,7 @@ namespace MonoDevelop.VersionControl
 						
 			public UpdateWorker (VersionControlItemList items) {
 				this.items = items;
+				OperationType = VersionControlOperationType.Pull;
 			}
 			
 			protected override string GetDescription() {

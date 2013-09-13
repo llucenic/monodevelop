@@ -78,6 +78,29 @@ namespace MonoDevelop.Ide
 			}
 		}
 		
+		/// <summary>
+		/// Fired when the IDE gets the focus
+		/// </summary>
+		public static event EventHandler FocusIn {
+			add { CommandService.ApplicationFocusIn += value; }
+			remove { CommandService.ApplicationFocusIn -= value; }
+		}
+		
+		/// <summary>
+		/// Fired when the IDE loses the focus
+		/// </summary>
+		public static event EventHandler FocusOut {
+			add { CommandService.ApplicationFocusOut += value; }
+			remove { CommandService.ApplicationFocusOut -= value; }
+		}
+
+		/// <summary>
+		/// Gets a value indicating whether the IDE has the input focus
+		/// </summary>
+		public static bool HasInputFocus {
+			get { return CommandService.ApplicationHasFocus; }
+		}
+
 		static IdeApp ()
 		{
 			preferences = new IdePreferences ();
@@ -133,7 +156,9 @@ namespace MonoDevelop.Ide
 		}
 		
 		public static Version Version {
-			get { return new Version (BuildVariables.PackageVersion); }
+			get {
+				return IdeVersionInfo.GetVersion ();
+			}
 		}
 		
 		public static void Initialize (IProgressMonitor monitor)
@@ -158,6 +183,7 @@ namespace MonoDevelop.Ide
 			KeyBindingService.LoadCurrentBindings ("MD2");
 
 			commandService.CommandError += delegate (object sender, CommandErrorArgs args) {
+				LoggingService.LogError (args.ErrorMessage, args.Exception);
 				MessageService.ShowException (args.Exception, args.ErrorMessage);
 			};
 			
@@ -174,7 +200,10 @@ namespace MonoDevelop.Ide
 			monitor.Step (1);
 			
 			InternalLog.EnableErrorNotification ();
-			
+
+			MonoDevelop.Ide.WelcomePage.WelcomePageService.Initialize ();
+			MonoDevelop.Ide.WelcomePage.WelcomePageService.ShowWelcomePage ();
+
 			monitor.Step (1);
 
 			Counters.Initialization.Trace ("Restoring Workbench State");
@@ -215,8 +244,8 @@ namespace MonoDevelop.Ide
 			if (PropertyService.Get("MonoDevelop.Core.FirstRun", false)) {
 				isInitialRun = true;
 				PropertyService.Set ("MonoDevelop.Core.FirstRun", false);
-				PropertyService.Set ("MonoDevelop.Core.LastRunVersion", BuildVariables.PackageVersion);
-				PropertyService.Set ("MonoDevelop.Core.LastRunVersion", CurrentRevision);
+				PropertyService.Set ("MonoDevelop.Core.LastRunVersion", BuildInfo.Version);
+				PropertyService.Set ("MonoDevelop.Core.LastRunRevision", CurrentRevision);
 				PropertyService.SaveProperties ();
 			}
 
@@ -233,7 +262,7 @@ namespace MonoDevelop.Ide
 					}
 				}
 				upgradedFromRevision = lastRevision;
-				PropertyService.Set ("MonoDevelop.Core.LastRunVersion", BuildVariables.PackageVersion);
+				PropertyService.Set ("MonoDevelop.Core.LastRunVersion", BuildInfo.Version);
 				PropertyService.Set ("MonoDevelop.Core.LastRunRevision", CurrentRevision);
 				PropertyService.SaveProperties ();
 			}
@@ -268,9 +297,6 @@ namespace MonoDevelop.Ide
 					IdeApp.Workspace.OpenWorkspaceItem (proj.FileName).WaitForCompleted ();
 				}
 			}
-			
-			commandService.CommandSelected += OnCommandSelected;
-			commandService.CommandDeselected += OnCommandDeselected;
 			
 			//FIXME: we should really make this on-demand. consumers can display a "loading help cache" message like VS
 			MonoDevelop.Projects.HelpService.AsyncInitialize ();
@@ -357,34 +383,6 @@ namespace MonoDevelop.Ide
 			}
 		}
 		
-		static StatusBarContext menuDescriptionContext;
-		
-		static void OnCommandSelected (object s, CommandSelectedEventArgs args)
-		{
-			string msg = args.CommandInfo.Description;
-			if (string.IsNullOrEmpty (msg)) {
-				msg = args.CommandInfo.Text;
-				// only replace _ outside of markup: usecase : Field <b>some_field</b>
-				int idx = msg.IndexOf ('<');
-				if (idx < 0)
-					idx = msg.Length;
-				msg = msg.Substring (0, idx).Replace ("_", "") + msg.Substring (idx);
-			}
-			if (!string.IsNullOrEmpty (msg)) {
-				if (menuDescriptionContext == null)
-					menuDescriptionContext = Workbench.StatusBar.CreateContext ();
-				menuDescriptionContext.ShowMessage (msg, args.CommandInfo.UseMarkup);
-			}
-		}
-			
-		static void OnCommandDeselected (object s, EventArgs args)
-		{
-			if (menuDescriptionContext != null) {
-				menuDescriptionContext.Dispose ();
-				menuDescriptionContext = null;
-			}
-		}
-			
 		public static void Run ()
 		{
 			// finally run the workbench window ...
@@ -435,9 +433,6 @@ namespace MonoDevelop.Ide
 			if (previousRevision <= 3) {
 				// Reset the current runtime when upgrading from <2.2, to ensure the default runtime is not stuck to an old mono install
 				IdeApp.Preferences.DefaultTargetRuntime = Runtime.SystemAssemblyService.CurrentRuntime;
-				
-				if (PropertyService.Get ("MonoDevelop.Core.Gui.Pads.UseCustomFont", false))
-					IdeApp.Preferences.CustomPadFont = PropertyService.Get<string> ("MonoDevelop.Core.Gui.Pads.CustomFont", null);
 			}
 			if (previousRevision < 5)
 				SetInitialLayout ();
@@ -447,9 +442,7 @@ namespace MonoDevelop.Ide
 		{
 			if (!IdeApp.Workbench.Layouts.Contains ("Solution")) {
 				// Create the Solution layout, based on Default
-				IdeApp.Workbench.CurrentLayout = "Default";
 				IdeApp.Workbench.CurrentLayout = "Solution";
-				IdeApp.Workbench.CurrentLayout = "Default";
 				IdeApp.Workbench.GetPad<MonoDevelop.Ide.Gui.Pads.ProjectPad.ProjectSolutionPad> ().Visible = false;
 				IdeApp.Workbench.GetPad<MonoDevelop.Ide.Gui.Pads.ClassBrowser.ClassBrowserPad> ().Visible = false;
 				foreach (Pad p in IdeApp.Workbench.Pads) {

@@ -29,7 +29,7 @@ using System.Reflection;
 
 namespace MonoDevelop.Ide
 {
-	public class IdeVersionInfo : ISystemInformationProvider
+	class IdeVersionInfo : ISystemInformationProvider
 	{
 		static bool IsMono ()
 		{
@@ -49,7 +49,7 @@ namespace MonoDevelop.Ide
 			return (string)mi.Invoke (null, null); 
 		}
 		
-		static string GetGtkVersion ()
+		public static string GetGtkVersion ()
 		{
 			uint v1 = 2, v2 = 0, v3 = 0;
 			
@@ -85,28 +85,41 @@ namespace MonoDevelop.Ide
 			return null;
 
 		}
+
+		public static string GetRuntimeInfo ()
+		{
+			string val;
+			if (IsMono ()) {
+				val = "Mono " + GetMonoVersionNumber ();
+			} else {
+				val = "Microsoft .NET " + Environment.Version;
+			}
+
+			if (IntPtr.Size == 8)
+				val += (" (64-bit)");
+
+			return val;
+		}
 		
+		string ISystemInformationProvider.Title {
+			get { return BrandingService.ApplicationName; }
+		}
+
 		string ISystemInformationProvider.Description {
 			get {
 				var sb = new System.Text.StringBuilder ();
-				sb.Append ("MonoDevelop ");
+				sb.Append ("Version ");
 				sb.AppendLine (MonoDevelopVersion);
 				
 				sb.Append ("Installation UUID: ");
 				sb.AppendLine (SystemInformation.InstallationUuid);
 							
 				sb.AppendLine ("Runtime:");
-				if (IsMono ()) {
-					sb.Append ("\tMono " + GetMonoVersionNumber ());
-				} else {
-					sb.Append ("\tMicrosoft .NET " + Environment.Version);
-				}
-			
-				if (IntPtr.Size == 8)
-					sb.Append (" (64-bit)");
+				sb.Append ("\t");
+				sb.Append (GetRuntimeInfo ());
 				sb.AppendLine ();
-				sb.Append ("\tGTK ");
-				sb.AppendLine (GetGtkVersion ());
+				sb.Append ("\tGTK+ ");
+				sb.AppendLine (GetGtkVersion () + " theme: " + Gtk.Settings.Default.ThemeName);
 				sb.Append ("\tGTK# (");
 				sb.Append (typeof(Gtk.VBox).Assembly.GetName ().Version);
 				sb.Append (")");
@@ -124,11 +137,39 @@ namespace MonoDevelop.Ide
 			}
 		}
 		
-		public string MonoDevelopVersion {
-			get { return BuildVariables.PackageVersion == BuildVariables.PackageVersionLabel
-					? BuildVariables.PackageVersionLabel
-					: string.Format ("{0} ({1})", BuildVariables.PackageVersionLabel, BuildVariables.PackageVersion);
+		public static string MonoDevelopVersion {
+			get {
+				string v = "";
+#pragma warning disable 162
+				if (BuildInfo.Version != BuildInfo.VersionLabel)
+					v += BuildInfo.Version;
+#pragma warning restore 162
+				if (GetVersion ().Revision >= 0) {
+					if (v.Length > 0)
+						v += " ";
+					v += "build " + GetVersion ().Revision;
+				}
+				if (v.Length == 0)
+					return BuildInfo.VersionLabel;
+				else
+					return BuildInfo.VersionLabel + " (" + v + ")";
 			}
+		}
+
+		static Version version;
+
+		internal static Version GetVersion ()
+		{
+			if (version == null) {
+				version = new Version (BuildInfo.Version);
+				var relId = SystemInformation.GetReleaseId ();
+				if (relId != null && relId.Length >= 9) {
+					int rev;
+					int.TryParse (relId.Substring (relId.Length - 4), out rev);
+					version = new Version (Math.Max (version.Major, 0), Math.Max (version.Minor, 0), Math.Max (version.Build, 0), Math.Max (rev, 0));
+				}
+			}
+			return version;
 		}
 	}
 }

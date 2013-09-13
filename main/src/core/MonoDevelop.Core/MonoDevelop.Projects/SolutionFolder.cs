@@ -66,6 +66,11 @@ namespace MonoDevelop.Projects
 				return items;
 			}
 		}
+
+		internal SolutionFolderItemCollection GetItemsWithoutCreating ()
+		{
+			return items;
+		}
 		
 		[ItemProperty]
 		[ProjectPathItemProperty ("File", Scope="*")]
@@ -194,19 +199,6 @@ namespace MonoDevelop.Projects
 			SetItemHandler (new DummySolutionFolderHandler (this));
 		}
 
-		
-		protected internal override bool OnGetNeedsBuilding (ConfigurationSelector configuration)
-		{
-			foreach (SolutionItem item in Items)
-				if (item.NeedsBuilding (configuration)) return true;
-			return false;
-		}
-		
-		protected internal override void OnSetNeedsBuilding (bool value, ConfigurationSelector configuration)
-		{
-			// Ignore
-		}
-		
 		public override void Dispose()
 		{
 			if (items != null) {
@@ -336,7 +328,9 @@ namespace MonoDevelop.Projects
 					}
 					if (!found) {
 						SolutionConfiguration sconf = new SolutionConfiguration (iconf.Id);
-						sconf.AddItem (eitem);
+						// Add all items to the new configuration
+						foreach (var it in ParentSolution.GetAllSolutionItems<SolutionEntityItem> ())
+							sconf.AddItem (it);
 						ParentSolution.Configurations.Add (sconf);
 					}
 				}
@@ -619,7 +613,7 @@ namespace MonoDevelop.Projects
 			}
 			
 			try {
-				List<SolutionItem> toBuild = new List<SolutionItem> (allProjects.Where (p => p.NeedsBuilding (configuration)));
+				List<SolutionItem> toBuild = new List<SolutionItem> (allProjects);
 				
 				monitor.BeginTask (GettextCatalog.GetString ("Building Solution: {0} ({1})", Name, configuration.ToString ()), toBuild.Count);
 
@@ -708,8 +702,11 @@ namespace MonoDevelop.Projects
 		{
 			foreach (Project projectEntry in GetAllProjects()) {
 				foreach (ProjectFile fInfo in projectEntry.Files) {
-					if (fInfo.FilePath == oldName)
+					if (fInfo.FilePath == oldName) {
+						if (fInfo.BuildAction == projectEntry.GetDefaultBuildAction (oldName))
+							fInfo.BuildAction = projectEntry.GetDefaultBuildAction (newName);
 						fInfo.Name = newName;
+					}
 				}
 			}
 		}
@@ -988,6 +985,10 @@ namespace MonoDevelop.Projects
 			get { return false; }
 		}
 		
+		public void OnModified (string hint)
+		{
+		}
+
 		public void Dispose ()
 		{
 		}

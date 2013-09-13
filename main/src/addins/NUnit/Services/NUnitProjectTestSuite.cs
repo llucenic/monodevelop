@@ -28,11 +28,13 @@
 
 
 using System.IO;
+using System.Linq;
 using System.Collections.Generic;
 
 using MonoDevelop.Projects;
 using MonoDevelop.Ide;
 using MonoDevelop.Ide.TypeSystem;
+using ICSharpCode.NRefactory.TypeSystem;
 using System;
 
 namespace MonoDevelop.NUnit
@@ -52,7 +54,7 @@ namespace MonoDevelop.NUnit
 		public NUnitProjectTestSuite (DotNetProject project): base (project.Name, project)
 		{
 			storeId = Path.GetFileName (project.FileName);
-			resultsPath = Path.Combine (project.BaseDirectory, "test-results");
+			resultsPath = MonoDevelop.NUnit.RootTest.GetTestResultsDirectory (project.BaseDirectory);
 			ResultsStore = new XmlResultsStore (resultsPath, storeId);
 			this.project = project;
 			project.NameChanged += new SolutionItemRenamedEventHandler (OnProjectRenamed);
@@ -61,15 +63,15 @@ namespace MonoDevelop.NUnit
 		
 		public static NUnitProjectTestSuite CreateTest (DotNetProject project)
 		{
-			foreach (ProjectReference p in project.References)
-				if (p.Reference.IndexOf ("nunit.framework") != -1 || p.Reference.IndexOf ("nunit.core") != -1)
+			foreach (var p in project.References)
+				if (p.Reference.IndexOf ("GuiUnit") != -1 || p.Reference.IndexOf ("nunit.framework") != -1 || p.Reference.IndexOf ("nunit.core") != -1)
 					return new NUnitProjectTestSuite (project);
 			return null;
 		}
 
 		protected override SourceCodeLocation GetSourceCodeLocation (string fixtureTypeNamespace, string fixtureTypeName, string methodName)
 		{
-			if (fixtureTypeName == null)
+			if (string.IsNullOrEmpty (fixtureTypeName) || string.IsNullOrEmpty (fixtureTypeName))
 				return null;
 			var ctx = TypeSystemService.GetCompilation (project);
 			var cls = ctx.MainAssembly.GetTypeDefinition (fixtureTypeNamespace, fixtureTypeName, 0);
@@ -110,10 +112,35 @@ namespace MonoDevelop.NUnit
 		
 		void OnProjectBuilt (object s, BuildEventArgs args)
 		{
-			if (RefreshRequired)
+			if (RefreshRequired) {
 				UpdateTests ();
+			} else {
+				Gtk.Application.Invoke (delegate {
+					OnProjectBuiltWithoutTestChange (EventArgs.Empty);
+				});
+			}
 		}
-	
+
+		public override void GetCustomTestRunner (out string assembly, out string type)
+		{
+			type = (string) project.ExtendedProperties ["TestRunnerType"];
+			var asm = project.ExtendedProperties ["TestRunnerAssembly"];
+			assembly = asm != null ? project.BaseDirectory.Combine (asm.ToString ()).ToString () : null;
+		}
+
+		public override void GetCustomConsoleRunner (out string command, out string args)
+		{
+			var r = project.ExtendedProperties ["TestRunnerCommand"];
+			command = r != null ? project.BaseDirectory.Combine (r.ToString ()).ToString () : null;
+			args = (string)project.ExtendedProperties ["TestRunnerArgs"];
+			if (command == null && args == null) {
+				var guiUnit = project.References.FirstOrDefault (pref => pref.ReferenceType == ReferenceType.Assembly && Path.GetFileName (pref.Reference) == "GuiUnit.exe");
+				if (guiUnit != null) {
+					command = guiUnit.Reference;
+				}
+			}
+		}
+
 		protected override string AssemblyPath {
 			get { return project.GetOutputFileName (IdeApp.Workspace.ActiveConfiguration); }
 		}
@@ -127,7 +154,7 @@ namespace MonoDevelop.NUnit
 				// Referenced assemblies which are not in the gac and which are not localy copied have to be preloaded
 				DotNetProject project = base.OwnerSolutionItem as DotNetProject;
 				if (project != null) {
-					foreach (ProjectReference pr in project.References) {
+					foreach (var pr in project.References) {
 						if (pr.ReferenceType != ReferenceType.Package && !pr.LocalCopy) {
 							foreach (string file in pr.GetReferencedFileNames (IdeApp.Workspace.ActiveConfiguration))
 								yield return file;
@@ -135,6 +162,15 @@ namespace MonoDevelop.NUnit
 					}
 				}
 			}
+		}
+
+		public event EventHandler ProjectBuiltWithoutTestChange;
+
+		protected virtual void OnProjectBuiltWithoutTestChange (EventArgs e)
+		{
+			var handler = ProjectBuiltWithoutTestChange;
+			if (handler != null)
+				handler (this, e);
 		}
 	}
 }

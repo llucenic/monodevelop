@@ -38,7 +38,7 @@ using System.Threading;
 
 namespace Mono.TextEditor
 {
-	public class TextDocument : AbstractAnnotatable, ICSharpCode.NRefactory.Editor.IDocument
+	public class TextDocument : ICSharpCode.NRefactory.AbstractAnnotatable, ICSharpCode.NRefactory.Editor.IDocument
 	{
 		readonly IBuffer buffer;
 		readonly ILineSplitter splitter;
@@ -58,17 +58,34 @@ namespace Mono.TextEditor
 			}
 			set {
 				if (mimeType != value) {
-					mimeType = value;
-					SyntaxMode = SyntaxModeService.GetSyntaxMode (this);
+					lock (this) {
+						mimeType = value;
+						SyntaxMode = SyntaxModeService.GetSyntaxMode (this, value);
+					}
 				}
 			}
 		}
 		
+		string fileName;
 		public string FileName {
-			get;
-			set;
+			get {
+				return fileName;
+			}
+			set {
+				fileName = value;
+				OnFileNameChanged (EventArgs.Empty);
+			}
 		}	
-		
+
+		public event EventHandler FileNameChanged;
+
+		protected virtual void OnFileNameChanged (EventArgs e)
+		{
+			EventHandler handler = this.FileNameChanged;
+			if (handler != null)
+				handler (this, e);
+		}
+
 		public bool HeightChanged {
 			get;
 			set;
@@ -116,6 +133,8 @@ namespace Mono.TextEditor
 			splitter.LineChanged += SplitterLineSegmentTreeLineChanged;
 			splitter.LineRemoved += HandleSplitterLineSegmentTreeLineRemoved;
 			foldSegmentTree.tree.NodeRemoved += HandleFoldSegmentTreetreeNodeRemoved; 
+			textSegmentMarkerTree.InstallListener (this);
+			this.diffTracker.SetTrackDocument (this); 
 		}
 
 		void HandleFoldSegmentTreetreeNodeRemoved (object sender, RedBlackTree<FoldSegment>.RedBlackTreeNodeEventArgs e)
@@ -166,9 +185,10 @@ namespace Mono.TextEditor
 			}
 			set {
 				var args = new DocumentChangeEventArgs (0, Text, value);
+				textSegmentMarkerTree.Clear ();
 				OnTextReplacing (args);
 				buffer.Text = value;
-				extendingTextMarkers = new List<TextMarker> ();
+				extendingTextMarkers = new List<TextLineMarker> ();
 				splitter.Initalize (value);
 				ClearFoldSegments ();
 				OnTextReplaced (args);
@@ -209,7 +229,6 @@ namespace Mono.TextEditor
 				throw new ArgumentOutOfRangeException ("count", "must be > 0, was: " + count);
 
 			InterruptFoldWorker ();
-			
 			//int oldLineCount = LineCount;
 			var args = new DocumentChangeEventArgs (offset, count > 0 ? GetTextAt (offset, count) : "", value, anchorMovementType);
 			OnTextReplacing (args);
@@ -232,10 +251,6 @@ namespace Mono.TextEditor
 			splitter.TextReplaced (this, args);
 			versionProvider.AppendChange (args);
 			OnTextReplaced (args);
-			
-			UpdateUndoStackOnReplace (args);
-			if (operation != null)
-				operation.Setup (this, args);
 		}
 		
 		public string GetTextBetween (int startOffset, int endOffset)
@@ -308,6 +323,10 @@ namespace Mono.TextEditor
 		
 		public char GetCharAt (int offset)
 		{
+			if (offset < 0)
+				throw new ArgumentException ("offset < 0");
+			if (offset >= TextLength)
+				throw new ArgumentException ("offset >= TextLength");
 			return buffer.GetCharAt (offset);
 		}
 
@@ -460,7 +479,8 @@ namespace Mono.TextEditor
 			if (lineNr < DocumentLocation.MinLine)
 				return DocumentLocation.Empty;
 			DocumentLine line = GetLine (lineNr);
-			return new DocumentLocation (lineNr, System.Math.Min (line.LengthIncludingDelimiter, offset - line.Offset) + 1);
+			var col = System.Math.Max (1, System.Math.Min (line.LengthIncludingDelimiter, offset - line.Offset) + 1);
+			return new DocumentLocation (lineNr, col);
 		}
 
 		public string GetLineIndent (int lineNumber)
@@ -498,8 +518,7 @@ namespace Mono.TextEditor
 		public class UndoOperation
 		{
 			DocumentChangeEventArgs args;
-			int startOffset, length;
-			
+
 			public virtual DocumentChangeEventArgs Args {
 				get {
 					return args;
@@ -515,39 +534,11 @@ namespace Mono.TextEditor
 			{
 			}
 
-			internal virtual bool ChangedLine (int offset, int lastLineOffset, int endOffset)
-			{
-				if (Args == null)
-					return false;
-				return startOffset <= lastLineOffset && offset <= startOffset + length 
-						|| lastLineOffset <= startOffset && startOffset <= endOffset
-						;
-					;
-			}
-			
 			public UndoOperation (DocumentChangeEventArgs args)
 			{
 				this.args = args;
 			}
-			
-			
-			internal void Setup (TextDocument doc, DocumentChangeEventArgs args)
-			{
-				if (args != null) {
-					startOffset = args.Offset;
-					length = args.InsertionLength;
-				}
-			}
-			
-			internal virtual void InformTextReplace (DocumentChangeEventArgs args)
-			{
-				if (args.Offset < startOffset) {
-					startOffset = System.Math.Max (startOffset + args.ChangeDelta, args.Offset);
-				} else if (args.Offset < startOffset + length) {
-					length = System.Math.Max (length + args.ChangeDelta, startOffset - args.Offset);
-				}
-			}
-			
+
 			public virtual void Undo (TextDocument doc)
 			{
 				doc.Replace (args.Offset, args.InsertionLength, args.RemovedText.Text);
@@ -577,7 +568,14 @@ namespace Mono.TextEditor
 		
 		class AtomicUndoOperation : UndoOperation
 		{
+			OperationType operationType;
 			protected List<UndoOperation> operations = new List<UndoOperation> ();
+
+			public OperationType OperationType {
+				get {
+					return operationType;
+				}
+			}
 			
 			public List<UndoOperation> Operations {
 				get {
@@ -590,22 +588,13 @@ namespace Mono.TextEditor
 					return null;
 				}
 			}
-			
-			
-			internal override void InformTextReplace (DocumentChangeEventArgs args)
+
+			public AtomicUndoOperation (OperationType operationType = OperationType.Undefined)
 			{
-				operations.ForEach (o => o.InformTextReplace (args));
+				this.operationType = operationType;
 			}
-			
-			internal override bool ChangedLine (int lineOffset, int lastLineOffset, int lineEndOffset)
-			{
-				foreach (var op in Operations) {
-					if (op.ChangedLine (lineOffset, lastLineOffset, lineEndOffset))
-						return true;
-				}
-				return false;
-			}
-			
+		
+
 			public void Insert (int index, UndoOperation operation)
 			{
 				operations.Insert (index, operation);
@@ -618,19 +607,23 @@ namespace Mono.TextEditor
 			
 			public override void Undo (TextDocument doc)
 			{
+				doc.currentAtomicUndoOperationType.Push (operationType);
 				for (int i = operations.Count - 1; i >= 0; i--) {
 					operations [i].Undo (doc);
 					doc.OnUndone (new UndoOperationEventArgs (operations[i]));
 				}
+				doc.currentAtomicUndoOperationType.Pop (); 
 				OnUndoDone ();
 			}
 			
 			public override void Redo (TextDocument doc)
 			{
+				doc.currentAtomicUndoOperationType.Push (operationType);
 				foreach (UndoOperation operation in this.operations) {
 					operation.Redo (doc);
 					doc.OnRedone (new UndoOperationEventArgs (operation));
 				}
+				doc.currentAtomicUndoOperationType.Pop (); 
 				OnRedoDone ();
 			}
 		}
@@ -647,7 +640,7 @@ namespace Mono.TextEditor
 					isClosed = value;
 				}
 			}
-			
+
 			public override DocumentChangeEventArgs Args {
 				get {
 					return operations.Count > 0 ? operations [operations.Count - 1].Args : null;
@@ -659,20 +652,33 @@ namespace Mono.TextEditor
 		Stack<UndoOperation> undoStack = new Stack<UndoOperation> ();
 		Stack<UndoOperation> redoStack = new Stack<UndoOperation> ();
 		AtomicUndoOperation currentAtomicOperation = null;
-		
-		// The undo stack needs to be updated on replace, because the text editor
-		// draws a replace operation marker at the left margin.
-		public void UpdateUndoStackOnReplace (DocumentChangeEventArgs args)
-		{
-			foreach (UndoOperation op in undoStack) {
-				op.InformTextReplace (args);
+
+		internal int UndoBeginOffset {
+			get {
+				if (undoStack.Count == 0)
+					return -1;
+				var op = undoStack.Peek ();
+				while (op is AtomicUndoOperation)
+					op = ((AtomicUndoOperation)op).Operations.FirstOrDefault ();
+				if (op == null)
+					return -1;
+				return ((UndoOperation)op).Args.Offset;
 			}
-			// since we're only displaying the undo stack it's not required to update the redo stack
-//			foreach (UndoOperation op in redoStack) {
-//				op.InformTextReplace (args);
-//			}
 		}
-		
+
+		internal int RedoBeginOffset {
+			get {
+				if (redoStack.Count == 0)
+					return -1;
+				var op = redoStack.Peek ();
+				while (op is AtomicUndoOperation)
+					op = ((AtomicUndoOperation)op).Operations.FirstOrDefault ();
+				if (op == null)
+					return -1;
+				return ((UndoOperation)op).Args.Offset;
+			}
+		}
+
 		public bool CanUndo {
 			get {
 				return this.undoStack.Count > 0 || currentAtomicOperation != null;
@@ -702,27 +708,21 @@ namespace Mono.TextEditor
 			Dirty,
 			Changed
 		}
+
+		public DiffTracker diffTracker = new DiffTracker ();
+
+		public DiffTracker DiffTracker {
+			get {
+				return diffTracker;
+			}
+			set {
+				diffTracker = value;
+			}
+		}
 		
 		public LineState GetLineState (DocumentLine line)
 		{
-			if (line == null)
-				return LineState.Unchanged;
-				
-			int lineOffset = line.Offset;
-			int lastLineEnd = line.Offset - line.DelimiterLength;
-			int lineEndOffset = lineOffset + line.LengthIncludingDelimiter;
-			foreach (UndoOperation op in undoStack) {
-				if (op.ChangedLine (lineOffset, lastLineEnd, lineEndOffset)) {
-					if (savePoint != null) {
-						foreach (UndoOperation savedUndo in savePoint) {
-							if (op == savedUndo)
-								return LineState.Changed;
-						}
-					}
-					return LineState.Dirty;
-				}
-			}
-			return LineState.Unchanged;
+			return diffTracker.GetLineState (line);
 		}
 		
 		
@@ -736,6 +736,7 @@ namespace Mono.TextEditor
 				((KeyboardStackUndo)undoStack.Peek ()).IsClosed = true;
 			savePoint = undoStack.ToArray ();
 			this.CommitUpdateAll ();
+			DiffTracker.SetBaseDocument (CreateDocumentSnapshot ());
 		}
 		
 		public void OptimizeTypedUndo ()
@@ -860,7 +861,8 @@ namespace Mono.TextEditor
 		}
 		
 		public event EventHandler<UndoOperationEventArgs> Redone;
-		
+		 
+		Stack<OperationType> currentAtomicUndoOperationType =  new Stack<OperationType> ();
 		int atomicUndoLevel;
 
 		public bool IsInAtomicUndo {
@@ -868,17 +870,23 @@ namespace Mono.TextEditor
 				return atomicUndoLevel > 0;
 			}
 		}
+
+		public OperationType CurrentAtomicUndoOperationType {
+			get {
+				return currentAtomicUndoOperationType.Count > 0 ?  currentAtomicUndoOperationType.Peek () : OperationType.Undefined;
+			}
+		}
 		
 		class UndoGroup : IDisposable
 		{
 			TextDocument doc;
 			
-			public UndoGroup (TextDocument doc)
+			public UndoGroup (TextDocument doc, OperationType operationType)
 			{
 				if (doc == null)
 					throw new ArgumentNullException ("doc");
+				doc.BeginAtomicUndo (operationType);
 				this.doc = doc;
-				doc.BeginAtomicUndo ();
 			}
 
 			public void Dispose ()
@@ -892,18 +900,24 @@ namespace Mono.TextEditor
 		
 		public IDisposable OpenUndoGroup()
 		{
-			return new UndoGroup (this);
+			return OpenUndoGroup(OperationType.Undefined);
 		}
-		
-		internal void BeginAtomicUndo ()
+
+		public IDisposable OpenUndoGroup(OperationType operationType)
 		{
+			return new UndoGroup (this, operationType);
+		}
+
+		internal void BeginAtomicUndo (OperationType operationType = OperationType.Undefined)
+		{
+			currentAtomicUndoOperationType.Push (operationType);
 			if (atomicUndoLevel == 0) {
 				if (this.syntaxMode != null && !SuppressHighlightUpdate)
 					Mono.TextEditor.Highlighting.SyntaxModeService.WaitUpdate (this);
 			}
 			if (currentAtomicOperation == null) {
 				Debug.Assert (atomicUndoLevel == 0); 
-				currentAtomicOperation = new AtomicUndoOperation ();
+				currentAtomicOperation = new AtomicUndoOperation (operationType);
 				OnBeginUndo ();
 			}
 			atomicUndoLevel++;
@@ -930,6 +944,7 @@ namespace Mono.TextEditor
 				}
 				currentAtomicOperation = null;
 			}
+			currentAtomicUndoOperationType.Pop ();
 		}
 		
 		protected virtual void OnBeginUndo ()
@@ -1221,7 +1236,9 @@ namespace Mono.TextEditor
 		
 		public event EventHandler<FoldSegmentEventArgs> Folded;
 		#endregion
-		
+
+		#region Text line markers
+
 		public event EventHandler<TextMarkerEvent> MarkerAdded;
 		protected virtual void OnMarkerAdded (TextMarkerEvent e)
 		{
@@ -1239,28 +1256,28 @@ namespace Mono.TextEditor
 		}
 
 		
-		List<TextMarker> extendingTextMarkers = new List<TextMarker> ();
+		List<TextLineMarker> extendingTextMarkers = new List<TextLineMarker> ();
 		public IEnumerable<DocumentLine> LinesWithExtendingTextMarkers {
 			get {
 				return from marker in extendingTextMarkers where marker.LineSegment != null select marker.LineSegment;
 			}
 		}
 		
-		public void AddMarker (int lineNumber, TextMarker marker)
+		public void AddMarker (int lineNumber, TextLineMarker marker)
 		{
 			AddMarker (this.GetLine (lineNumber), marker);
 		}
 		
-		public void AddMarker (DocumentLine line, TextMarker marker)
+		public void AddMarker (DocumentLine line, TextLineMarker marker)
 		{
 			AddMarker (line, marker, true);
 		}
-		
-		public void AddMarker (DocumentLine line, TextMarker marker, bool commitUpdate)
+
+		public void AddMarker (DocumentLine line, TextLineMarker marker, bool commitUpdate)
 		{
 			if (line == null || marker == null)
 				return;
-			if (marker is IExtendingTextMarker) {
+			if (marker is IExtendingTextLineMarker) {
 				lock (extendingTextMarkers) {
 					HeightChanged = true;
 					extendingTextMarkers.Add (marker);
@@ -1273,26 +1290,26 @@ namespace Mono.TextEditor
 				this.CommitLineUpdate (line);
 		}
 		
-		static int CompareMarkers (TextMarker left, TextMarker right)
+		static int CompareMarkers (TextLineMarker left, TextLineMarker right)
 		{
 			if (left.LineSegment == null || right.LineSegment == null)
 				return 0;
 			return left.LineSegment.Offset.CompareTo (right.LineSegment.Offset);
 		}
 		
-		public void RemoveMarker (TextMarker marker)
+		public void RemoveMarker (TextLineMarker marker)
 		{
 			RemoveMarker (marker, true);
 		}
 		
-		public void RemoveMarker (TextMarker marker, bool updateLine)
+		public void RemoveMarker (TextLineMarker marker, bool updateLine)
 		{
 			if (marker == null)
 				return;
 			var line = marker.LineSegment;
 			if (line == null)
 				return;
-			if (marker is IExtendingTextMarker) {
+			if (marker is IExtendingTextLineMarker) {
 				lock (extendingTextMarkers) {
 					HeightChanged = true;
 					extendingTextMarkers.Remove (marker);
@@ -1322,10 +1339,10 @@ namespace Mono.TextEditor
 		{
 			if (line == null || type == null)
 				return;
-			if (typeof(IExtendingTextMarker).IsAssignableFrom (type)) {
+			if (typeof(IExtendingTextLineMarker).IsAssignableFrom (type)) {
 				lock (extendingTextMarkers) {
 					HeightChanged = true;
-					foreach (TextMarker marker in line.Markers.Where (marker => marker is IExtendingTextMarker)) {
+					foreach (TextLineMarker marker in line.Markers.Where (marker => marker is IExtendingTextLineMarker)) {
 						extendingTextMarkers.Remove (marker);
 					}
 				}
@@ -1334,16 +1351,64 @@ namespace Mono.TextEditor
 			if (updateLine)
 				this.CommitLineUpdate (line);
 		}
+
+		#endregion
+
+		#region Text segment markers
+
+		SegmentTree<TextSegmentMarker> textSegmentMarkerTree = new SegmentTree<TextSegmentMarker> (); 
+
+		public IEnumerable<TextSegmentMarker> GetTextSegmentMarkersAt (DocumentLine line)
+		{
+			return textSegmentMarkerTree.GetSegmentsOverlapping (line.Segment);
+		}
+
+		public IEnumerable<TextSegmentMarker> GetTextSegmentMarkersAt (TextSegment segment)
+		{
+			return textSegmentMarkerTree.GetSegmentsOverlapping (segment);
+		}
+
+		public IEnumerable<TextSegmentMarker> GetTextSegmentMarkersAt (int offset)
+		{
+			return textSegmentMarkerTree.GetSegmentsAt (offset);
+		}
 		
+
+		public void AddMarker (TextSegmentMarker marker)
+		{
+			textSegmentMarkerTree.Add (marker);
+			var startLine = OffsetToLineNumber (marker.Offset);
+			var endLine = OffsetToLineNumber (marker.EndOffset);
+			CommitMultipleLineUpdate (startLine, endLine);
+		}
+
+		/// <summary>
+		/// Removes a marker from the document.
+		/// </summary>
+		/// <returns><c>true</c>, if marker was removed, <c>false</c> otherwise.</returns>
+		/// <param name="marker">Marker.</param>
+		public bool RemoveMarker (TextSegmentMarker marker)
+		{
+			bool wasRemoved = textSegmentMarkerTree.Remove (marker);
+			if (wasRemoved) {
+				var startLine = OffsetToLineNumber (marker.Offset);
+				var endLine = OffsetToLineNumber (marker.EndOffset);
+				CommitMultipleLineUpdate (startLine, endLine);
+			}
+			return wasRemoved;
+		}
+
+		#endregion
+
 		void HandleSplitterLineSegmentTreeLineRemoved (object sender, LineEventArgs e)
 		{
-			foreach (TextMarker marker in e.Line.Markers) {
-				if (marker is IExtendingTextMarker) {
+			foreach (TextLineMarker marker in e.Line.Markers) {
+				if (marker is IExtendingTextLineMarker) {
 					lock (extendingTextMarkers) {
 						HeightChanged = true;
 						extendingTextMarkers.Remove (marker);
 					}
-					UnRegisterVirtualTextMarker ((IExtendingTextMarker)marker);
+					UnRegisterVirtualTextMarker ((IExtendingTextLineMarker)marker);
 				}
 			}
 		}
@@ -1438,7 +1503,7 @@ namespace Mono.TextEditor
 		
 		public static bool IsWordSeparator (char ch)
 		{
-			return Char.IsWhiteSpace (ch) || (Char.IsPunctuation (ch) && ch != '_');
+			return !(char.IsLetterOrDigit (ch) || ch == '_');
 		}
 
 		public bool IsWholeWordAt (int offset, int length)
@@ -1552,15 +1617,15 @@ namespace Mono.TextEditor
 			}
 		}
 		
-		Dictionary<int, IExtendingTextMarker> virtualTextMarkers = new Dictionary<int, IExtendingTextMarker> ();
-		public void RegisterVirtualTextMarker (int lineNumber, IExtendingTextMarker marker)
+		Dictionary<int, IExtendingTextLineMarker> virtualTextMarkers = new Dictionary<int, IExtendingTextLineMarker> ();
+		public void RegisterVirtualTextMarker (int lineNumber, IExtendingTextLineMarker marker)
 		{
 			virtualTextMarkers[lineNumber] = marker;
 		}
 		
-		public IExtendingTextMarker GetExtendingTextMarker (int lineNumber)
+		public IExtendingTextLineMarker GetExtendingTextMarker (int lineNumber)
 		{
-			IExtendingTextMarker result;
+			IExtendingTextLineMarker result;
 			if (virtualTextMarkers.TryGetValue (lineNumber, out result))
 				return result;
 			return null;
@@ -1572,7 +1637,7 @@ namespace Mono.TextEditor
 		/// <param name='marker'>
 		/// marker.
 		/// </param>
-		public void UnRegisterVirtualTextMarker (IExtendingTextMarker marker)
+		public void UnRegisterVirtualTextMarker (IExtendingTextLineMarker marker)
 		{
 			var keys = new List<int> (from pair in virtualTextMarkers where pair.Value == marker select pair.Key);
 			keys.ForEach (key => { virtualTextMarkers.Remove (key); CommitLineUpdate (key); });
@@ -1823,6 +1888,11 @@ namespace Mono.TextEditor
 				Text = text;
 				ReadOnly = true;
 			}
+		}
+
+		public TextDocument CreateDocumentSnapshot ()
+		{
+			return new SnapshotDocument (Text, Version);
 		}
 
 		ICSharpCode.NRefactory.Editor.IDocument ICSharpCode.NRefactory.Editor.IDocument.CreateDocumentSnapshot ()

@@ -84,6 +84,7 @@ namespace MonoDevelop.SourceEditor
 			UpdateStylePolicy (currentPolicy);
 			PropertyService.PropertyChanged += UpdatePreferences;
 			FontService.RegisterFontChangedCallback ("Editor", UpdateFont);
+			FontService.RegisterFontChangedCallback ("Editor(Gutter)", UpdateFont);
 			FontService.RegisterFontChangedCallback ("MessageBubbles", UpdateFont);
 			
 		}
@@ -97,6 +98,7 @@ namespace MonoDevelop.SourceEditor
 		void UpdateFont ()
 		{
 			base.FontName = FontName;
+			base.GutterFontName = GutterFontName;
 			this.OnChanged (EventArgs.Empty);
 		
 		}
@@ -146,20 +148,8 @@ namespace MonoDevelop.SourceEditor
 				case "ShowFoldMargin":
 					base.ShowFoldMargin = (bool)args.NewValue;
 					break;
-				case "ShowInvalidLines":
-					base.ShowInvalidLines = (bool)args.NewValue;
-					break;
-				case "ShowTabs":
-					base.ShowTabs = (bool)args.NewValue;
-					break;
-				case "ShowEolMarkers":
-					base.ShowEolMarkers = (bool)args.NewValue;
-					break;
 				case "HighlightCaretLine":
 					base.HighlightCaretLine = (bool)args.NewValue;
-					break;
-				case "ShowSpaces":
-					base.ShowSpaces = (bool)args.NewValue;
 					break;
 				case "EnableSyntaxHighlighting":
 					base.EnableSyntaxHighlighting = (bool)args.NewValue;
@@ -172,6 +162,9 @@ namespace MonoDevelop.SourceEditor
 					break;
 				case "FontName":
 					base.FontName = (string)args.NewValue;
+					break;
+				case "GutterFontName":
+					base.GutterFontName = (string)args.NewValue;
 					break;
 				case "ColorScheme":
 					base.ColorScheme = (string)args.NewValue;
@@ -197,6 +190,12 @@ namespace MonoDevelop.SourceEditor
 				case "UseAntiAliasing":
 					base.UseAntiAliasing = (bool)args.NewValue;
 					break;
+				case "DrawIndentationMarkers":
+					base.DrawIndentationMarkers = (bool)args.NewValue;
+					break;
+				case "EnableQuickDiff":
+					base.EnableQuickDiff = (bool)args.NewValue;
+					break;
 				}
 			} catch (Exception ex) {
 				LoggingService.LogError ("SourceEditorOptions error with property value for '" + (args.Key ?? "") + "'", ex);
@@ -213,16 +212,13 @@ namespace MonoDevelop.SourceEditor
 			this.underlineErrors = PropertyService.Get ("UnderlineErrors", true);
 			this.indentStyle = PropertyService.Get ("IndentStyle", IndentStyle.Smart);
 			base.ShowLineNumberMargin = PropertyService.Get ("ShowLineNumberMargin", true);
-			base.ShowFoldMargin = PropertyService.Get ("ShowFoldMargin", true);
-			base.ShowInvalidLines = PropertyService.Get ("ShowInvalidLines", false);
-			base.ShowTabs = PropertyService.Get ("ShowTabs", false);
-			base.ShowEolMarkers = PropertyService.Get ("ShowEolMarkers", false);
+			base.ShowFoldMargin = PropertyService.Get ("ShowFoldMargin", false);
 			base.HighlightCaretLine = PropertyService.Get ("HighlightCaretLine", false);
-			base.ShowSpaces = PropertyService.Get ("ShowSpaces", false);
 			base.EnableSyntaxHighlighting = PropertyService.Get ("EnableSyntaxHighlighting", true);
 			base.HighlightMatchingBracket = PropertyService.Get ("HighlightMatchingBracket", true);
 			base.ShowRuler = PropertyService.Get ("ShowRuler", false);
 			base.FontName = PropertyService.Get ("FontName", "Mono 10");
+			base.GutterFontName = PropertyService.Get ("GutterFontName", "");
 			base.ColorScheme = PropertyService.Get ("ColorScheme", "Default");
 			this.defaultRegionsFolding = PropertyService.Get ("DefaultRegionsFolding", false);
 			this.defaultCommentFolding = PropertyService.Get ("DefaultCommentFolding", true);
@@ -233,7 +229,12 @@ namespace MonoDevelop.SourceEditor
 			base.EnableAnimations = PropertyService.Get ("EnableAnimations", true);
 			base.UseAntiAliasing = PropertyService.Get ("UseAntiAliasing", true);
 			this.EnableHighlightUsages = PropertyService.Get ("EnableHighlightUsages", false);
+			base.DrawIndentationMarkers = PropertyService.Get ("DrawIndentationMarkers", false);
 			this.lineEndingConversion = PropertyService.Get ("LineEndingConversion", LineEndingConversion.Ask);
+			base.ShowWhitespaces = PropertyService.Get ("ShowWhitespaces", Mono.TextEditor.ShowWhitespaces.Never);
+			base.IncludeWhitespaces = PropertyService.Get ("IncludeWhitespaces", Mono.TextEditor.IncludeWhitespaces.All);
+			base.WrapLines = PropertyService.Get ("WrapLines", false);
+			base.EnableQuickDiff = PropertyService.Get ("EnableQuickDiff", false);
 		}
 		
 		#region new options
@@ -241,11 +242,6 @@ namespace MonoDevelop.SourceEditor
 		public bool EnableAutoCodeCompletion {
 			get { return CompletionTextEditorExtension.EnableAutoCodeCompletion; }
 			set { CompletionTextEditorExtension.EnableAutoCodeCompletion.Set (value); }
-		}
-		
-		public bool CompleteWithSpaceOrPunctuation {
-			get { return CompletionTextEditorExtension.CompleteWithSpaceOrPunctuation; }
-			set { CompletionTextEditorExtension.CompleteWithSpaceOrPunctuation.Set (value); }
 		}
 		
 		bool defaultRegionsFolding;
@@ -345,17 +341,7 @@ namespace MonoDevelop.SourceEditor
 				}
 			}
 		}
-		
-		public bool EnableCodeCompletion {
-			get { return CompletionTextEditorExtension.EnableCodeCompletion; }
-			set { CompletionTextEditorExtension.EnableCodeCompletion.Value = value; }
-		}
-		
-		public bool EnableParameterInsight {
-			get { return CompletionTextEditorExtension.EnableParameterInsight; }
-			set { CompletionTextEditorExtension.EnableParameterInsight.Value = value; }
-		}
-		
+
 		bool underlineErrors;
 		public bool UnderlineErrors {
 			get {
@@ -566,38 +552,10 @@ namespace MonoDevelop.SourceEditor
 			}
 		}
 		
-		public override bool ShowInvalidLines {
-			set {
-				PropertyService.Set ("ShowInvalidLines", value);
-				base.ShowInvalidLines = value;
-			}
-		}
-		
-		public override bool ShowTabs {
-			set {
-				PropertyService.Set ("ShowTabs", value);
-				base.ShowTabs = value;
-			}
-		}
-		
-		public override bool ShowEolMarkers {
-			set {
-				PropertyService.Set ("ShowEolMarkers", value);
-				base.ShowEolMarkers = value;
-			}
-		}
-		
 		public override bool HighlightCaretLine {
 			set {
 				PropertyService.Set ("HighlightCaretLine", value);
 				base.HighlightCaretLine = value;
-			}
-		}
-		
-		public override bool ShowSpaces {
-			set {
-				PropertyService.Set ("ShowSpaces", value);
-				base.ShowSpaces = value;
 			}
 		}
 		
@@ -643,9 +601,53 @@ namespace MonoDevelop.SourceEditor
 			}
 		}
 
+		public override bool DrawIndentationMarkers {
+			set {
+				PropertyService.Set ("DrawIndentationMarkers", value);
+				base.DrawIndentationMarkers = value;
+			}
+		}
+
+		public override ShowWhitespaces ShowWhitespaces {
+			set {
+				PropertyService.Set ("ShowWhitespaces", value);
+				base.ShowWhitespaces = value;
+			}
+		}
+
+		public override IncludeWhitespaces IncludeWhitespaces {
+			set {
+				PropertyService.Set ("IncludeWhitespaces", value);
+				base.IncludeWhitespaces = value;
+			}
+		}
+
+		public override bool WrapLines {
+			set {
+				PropertyService.Set ("WrapLines", value);
+				base.WrapLines = value;
+			}
+		}
+
+		public override bool EnableQuickDiff {
+			set {
+				PropertyService.Set ("EnableQuickDiff", value);
+				base.EnableQuickDiff = value;
+			}
+		}
+
 		public override string FontName {
 			get {
 				return FontService.FilterFontName (FontService.GetUnderlyingFontName ("Editor"));
+			}
+			set {
+				throw new InvalidOperationException ("Set font through font service");
+			}
+		}
+		
+		public override string GutterFontName {
+			get {
+				return FontService.FilterFontName (FontService.GetUnderlyingFontName ("Editor(Gutter)"));
 			}
 			set {
 				throw new InvalidOperationException ("Set font through font service");

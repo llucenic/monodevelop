@@ -30,7 +30,6 @@ using System.Linq;
 using System.Text;
 using System.Xml;
 using MonoDevelop.Ide.CodeCompletion;
-
 using MonoDevelop.Core;
 using MonoDevelop.Ide.Gui;
 using MonoDevelop.Ide.Gui.Content;
@@ -45,61 +44,58 @@ using ICSharpCode.NRefactory.CSharp.Refactoring;
 using ICSharpCode.NRefactory.CSharp.Resolver;
 using ICSharpCode.NRefactory.CSharp.TypeSystem;
 using System.IO;
+using MonoDevelop.CSharp.Formatting;
 
 namespace MonoDevelop.CSharp.Completion
 {
-	public class MemberCompletionData : CompletionData, IEntityCompletionData
+	class MemberCompletionData : CompletionData, IEntityCompletionData
 	{
 		CSharpCompletionTextEditorExtension editorCompletion;
 		OutputFlags flags;
 		bool hideExtensionParameter = true;
 		static CSharpAmbience ambience = new CSharpAmbience ();
-		bool descriptionCreated = false;
-		
-		string description, completionString;
+		string completionString;
 		string displayText;
-		
 		Dictionary<string, CompletionData> overloads;
-		
+
 		Mono.TextEditor.TextEditorData Editor {
 			get {
 				return editorCompletion.TextEditorData;
 			}
 		}
-		
+
 		MonoDevelop.CSharp.Formatting.CSharpFormattingPolicy Policy {
 			get {
 				return editorCompletion.FormattingPolicy;
 			}
 		}
-		
+
 		public override string Description {
 			get {
-				CheckDescription ();
-				return description;
+				return "";
 			}
 		}
-		
+
 		public override string CompletionText {
 			get { return completionString; }
 			set { completionString = value; }
 		}
-		
+
 		public override string DisplayText {
 			get {
 				if (displayText == null) {
-					displayText = ambience.GetString (Entity, flags | OutputFlags.HideGenericParameterNames);
+					displayText = ambience.GetString (Entity.SymbolKind == SymbolKind.Constructor ? Entity.DeclaringTypeDefinition : Entity, flags | OutputFlags.HideGenericParameterNames);
 				}
 				return displayText; 
 			}
 		}
-		
+
 		public override IconId Icon {
 			get {
-				return Entity.GetStockIcon ();
+				return (Entity.SymbolKind == SymbolKind.Constructor ? Entity.DeclaringTypeDefinition : Entity).GetStockIcon ();
 			}
 		}
-		
+
 		public bool HideExtensionParameter {
 			get {
 				return hideExtensionParameter;
@@ -108,11 +104,31 @@ namespace MonoDevelop.CSharp.Completion
 				hideExtensionParameter = value;
 			}
 		}
-		
-		public bool IsDelegateExpected { get; set; }
-		
-		public MemberCompletionData (CSharpCompletionTextEditorExtension  editorCompletion, IEntity entity, OutputFlags flags)
+
+		bool isDelegateExpected;
+		public bool IsDelegateExpected {
+			get {
+				return isDelegateExpected || factory != null && factory.Engine.PossibleDelegates.Count > 0;
+			} 
+			set {
+				isDelegateExpected = value;
+			}
+		}
+
+		ICompilation compilation;
+		CSharpUnresolvedFile file;
+		CSharpCompletionTextEditorExtension.CompletionDataFactory factory;
+
+		public MemberCompletionData (CSharpCompletionTextEditorExtension.CompletionDataFactory factory, IEntity entity, OutputFlags flags) : this(factory.ext, entity, flags)
 		{
+			this.factory = factory;
+		}
+
+		public MemberCompletionData (CSharpCompletionTextEditorExtension editorCompletion, IEntity entity, OutputFlags flags)
+		{
+			compilation = editorCompletion.UnresolvedFileCompilation;
+			file = editorCompletion.CSharpUnresolvedFile;
+
 			this.editorCompletion = editorCompletion;
 			this.flags = flags;
 			SetMember (entity);
@@ -121,7 +137,7 @@ namespace MonoDevelop.CSharp.Completion
 			if (m != null && m.IsObsolete ())
 				DisplayFlags |= DisplayFlags.Obsolete;
 		}
-		
+
 		public bool SearchBracket (int start, out int pos)
 		{
 			pos = -1;
@@ -137,8 +153,8 @@ namespace MonoDevelop.CSharp.Completion
 			}
 			return false;
 		}
-		
-		bool HasNonMethodMembersWithSameName (IMember member)
+
+		static bool HasNonMethodMembersWithSameName (IMember member)
 		{
 			return member.DeclaringType.GetFields ().Cast<INamedElement> ()
 				.Concat (member.DeclaringType.GetProperties ().Cast<INamedElement> ())
@@ -146,29 +162,80 @@ namespace MonoDevelop.CSharp.Completion
 				.Concat (member.DeclaringType.GetNestedTypes ().Cast<INamedElement> ())
 				.Any (e => e.Name == member.Name);
 		}
-		
-		bool HasAnyOverloadWithParameters (IMethod method)
+
+		static bool HasAnyOverloadWithParameters (IMethod method)
 		{
-			return method.DeclaringType.GetMethods ().Any (m => m.Parameters.Count > 0);
+			if (method.SymbolKind == SymbolKind.Constructor) 
+				return method.DeclaringType.GetConstructors ().Any (m => m.Parameters.Count > 0);
+			return method.DeclaringType.GetMethods ().Any (m => m.Name == method.Name && m.Parameters.Count > 0);
 		}
-		
+
 		public override void InsertCompletionText (CompletionListWindow window, ref KeyActions ka, Gdk.Key closeChar, char keyChar, Gdk.ModifierType modifier)
+		{
+			InsertCompletionText (window, ref ka, closeChar, keyChar, modifier, CompletionTextEditorExtension.AddParenthesesAfterCompletion, CompletionTextEditorExtension.AddOpeningOnly);
+		}
+
+		bool IsBracketAlreadyInserted (IMethod method)
+		{
+			int offset = Editor.Caret.Offset;
+			while (offset < Editor.Length) {
+				char ch = Editor.GetCharAt (offset);
+				if (!char.IsLetterOrDigit (ch))
+					break;
+				offset++;
+			}
+			while (offset < Editor.Length) {
+				char ch = Editor.GetCharAt (offset);
+				if (!char.IsWhiteSpace (ch))
+					return ch == '(' || ch == '<' && RequireGenerics (method);
+				offset++;
+			}
+			return false;
+		}
+
+		bool InsertSemicolon (int exprStart)
+		{
+			int offset = exprStart;
+			while (offset > 0) {
+				char ch = Editor.GetCharAt (offset);
+				if (!char.IsWhiteSpace (ch)) {
+					if (ch != '{' && ch != '}' && ch != ';')
+						return false;
+					break;
+				}
+				offset--;
+			}
+
+			offset = Editor.Caret.Offset;
+			while (offset < Editor.Length) {
+				char ch = Editor.GetCharAt (offset);
+				if (!char.IsLetterOrDigit (ch))
+					break;
+				offset++;
+			}
+			while (offset < Editor.Length) {
+				char ch = Editor.GetCharAt (offset);
+				if (!char.IsWhiteSpace (ch))
+					return char.IsLetter (ch) || ch == '}';
+				offset++;
+			}
+			return true;
+		}
+
+		public void InsertCompletionText (CompletionListWindow window, ref KeyActions ka, Gdk.Key closeChar, char keyChar, Gdk.ModifierType modifier, bool addParens, bool addOpeningOnly)
 		{
 			string text = CompletionText;
 			string partialWord = GetCurrentWord (window);
 			int skipChars = 0;
 			bool runParameterCompletionCommand = false;
-			
-			if (keyChar == '(' && !IsDelegateExpected && Entity is IMethod && !HasNonMethodMembersWithSameName ((IMember)Entity)) {
-				
+			var method = Entity as IMethod;
+			if (addParens && !IsDelegateExpected && method != null && !HasNonMethodMembersWithSameName ((IMember)Entity) && !IsBracketAlreadyInserted (method)) {
 				var line = Editor.GetLine (Editor.Caret.Line);
-				var method = (IMethod)Entity;
 				var start = window.CodeCompletionContext.TriggerOffset + partialWord.Length + 2;
 				var end = line.Offset + line.Length;
 				string textToEnd = start < end ? Editor.GetTextBetween (start, end) : "";
-				if (Policy.BeforeMethodCallParentheses)
-					text += " ";
-				
+				bool addSpace = Policy.BeforeMethodCallParentheses && CSharpTextEditorIndentation.OnTheFlyFormatting;
+
 				int exprStart = window.CodeCompletionContext.TriggerOffset - 1;
 				while (exprStart > line.Offset) {
 					char ch = Editor.GetCharAt (exprStart);
@@ -176,72 +243,98 @@ namespace MonoDevelop.CSharp.Completion
 						break;
 					exprStart--;
 				}
-				string textBefore = Editor.GetTextBetween (line.Offset, exprStart);
-				bool insertSemicolon = false;
-				if (string.IsNullOrEmpty ((textBefore + textToEnd).Trim ()))
-					insertSemicolon = true;
-			
-			
-				
-				int pos;
-				if (SearchBracket (window.CodeCompletionContext.TriggerOffset + partialWord.Length, out pos)) {
-					window.CompletionWidget.SetCompletionText (window.CodeCompletionContext, partialWord, text);
-					ka |= KeyActions.Ignore;
-					int bracketOffset = pos + text.Length - partialWord.Length;
-					
-					// correct white space before method call.
-					char charBeforeBracket = bracketOffset > 1 ? Editor.GetCharAt (bracketOffset - 2) : '\0';
-					if (Policy.BeforeMethodCallParentheses) {
-						if (charBeforeBracket != ' ') {
-							Editor.Insert (bracketOffset - 1, " ");
-							bracketOffset++;
+				bool insertSemicolon = InsertSemicolon(exprStart);
+				if (Entity.SymbolKind == SymbolKind.Constructor)
+					insertSemicolon = false;
+				//int pos;
+
+				Gdk.Key[] keys = new [] { Gdk.Key.Return, Gdk.Key.Tab, Gdk.Key.space, Gdk.Key.KP_Enter, Gdk.Key.ISO_Enter };
+				if (keys.Contains (closeChar) || keyChar == '.') {
+					if (HasAnyOverloadWithParameters (method)) {
+						if (addOpeningOnly) {
+							text += RequireGenerics (method) ? "<|" : (addSpace ? " (|" : "(|");
+							skipChars = 0;
+						} else {
+							if (keyChar == '.') {
+								if (RequireGenerics (method)) {
+									text += addSpace ? "<> ()" : "<>()";
+								} else {
+									text += addSpace ? " ()" : "()";
+								}
+								skipChars = 0;
+							} else {
+								if (insertSemicolon) {
+									if (RequireGenerics (method)) {
+										text += addSpace ? "<|> ();" : "<|>();";
+										skipChars = addSpace ? 5 : 4;
+									} else {
+										text += addSpace ? " (|);" : "(|);";
+										skipChars = 2;
+									}
+								} else {
+									if (RequireGenerics (method)) {
+										text += addSpace ? "<|> ()" :  "<|>()";
+										skipChars = addSpace ? 4 : 3;
+									} else {
+										text += addSpace ? " (|)" : "(|)";
+										skipChars = 1;
+									}
+								}
+							}
 						}
-					} else { 
-						if (char.IsWhiteSpace (charBeforeBracket)) {
-							while (bracketOffset > 1 && char.IsWhiteSpace (Editor.GetCharAt (bracketOffset - 2))) {
-								Editor.Remove (bracketOffset - 1, 1);
-								bracketOffset--;
+						runParameterCompletionCommand = true;
+					} else {
+						if (addOpeningOnly) {
+							text += RequireGenerics (method) ? "<|" : (addSpace ? " (|" : "(|");
+							skipChars = 0;
+						} else {
+							if (keyChar == '.') {
+								if (RequireGenerics (method)) {
+									text += addSpace ? "<> ().|" : "<>().|";
+								} else {
+									text += addSpace ? " ().|" : "().|";
+								}
+								skipChars = 0;
+							} else {
+								if (insertSemicolon) {
+									if (RequireGenerics (method)) {
+										text += addSpace ? "<|> ();" : "<|>();";
+									} else {
+										text += addSpace ? " ();|" : "();|";
+									}
+
+								} else {
+									if (RequireGenerics (method)) {
+										text += addSpace ? "<|> ()" : "<|>()";
+									} else {
+										text += addSpace ? " ()|" : "()|";
+									}
+
+								}
 							}
 						}
 					}
-					Editor.Caret.Offset = bracketOffset;
-					if (insertSemicolon && Editor.GetCharAt (bracketOffset) == ')') {
-						Editor.Insert (bracketOffset + 1, ";");
-						// Need to reinsert the ')' as skip char because we inserted the ';' after the ')' and skip chars get deleted 
-						// when an insert after the skip char position occur.
-						Editor.SetSkipChar (bracketOffset, ')');
-						Editor.SetSkipChar (bracketOffset + 1, ';');
-					}
-					if (runParameterCompletionCommand)
-						editorCompletion.RunParameterCompletionCommand ();
-					return;
-				}
-				
-				if (HasAnyOverloadWithParameters (method)) {
-					if (insertSemicolon) {
-						text += "(|);";
-						skipChars = 2;
-					} else {
-						text += "(|)";
-						skipChars = 1;
-					}
-					runParameterCompletionCommand = true;
-				} else {
-					if (insertSemicolon) {
-						text += "();|";
-					} else {
-						text += "()|";
+					if (keyChar == '(') {
+						var skipChar = Editor.SkipChars.LastOrDefault ();
+						if (skipChar != null && skipChar.Offset == (window.CodeCompletionContext.TriggerOffset + partialWord.Length) && skipChar.Char == ')')
+							Editor.Remove (skipChar.Offset, 1);
 					}
 				}
-				if (keyChar == '(') {
-					var skipChar = Editor.SkipChars.LastOrDefault ();
-					if (skipChar != null && skipChar.Offset == (window.CodeCompletionContext.TriggerOffset + partialWord.Length) && skipChar.Char == ')')
-						Editor.Remove (skipChar.Offset, 1);
-				}
-				
 				ka |= KeyActions.Ignore;
 			}
-			
+			if ((DisplayFlags & DisplayFlags.NamedArgument) == DisplayFlags.NamedArgument &&
+			    (closeChar == Gdk.Key.Tab ||
+				 closeChar == Gdk.Key.KP_Tab ||
+				 closeChar == Gdk.Key.ISO_Left_Tab ||
+				 closeChar == Gdk.Key.Return ||
+				 closeChar == Gdk.Key.KP_Enter ||
+				 closeChar == Gdk.Key.ISO_Enter)) {
+				if (Policy.AroundAssignmentParentheses)
+					text += " ";
+				text += "=";
+				if (Policy.AroundAssignmentParentheses)
+					text += " ";
+			}
 			window.CompletionWidget.SetCompletionText (window.CodeCompletionContext, partialWord, text);
 			int offset = Editor.Caret.Offset;
 			for (int i = 0; i < skipChars; i++) {
@@ -252,17 +345,34 @@ namespace MonoDevelop.CSharp.Completion
 			if (runParameterCompletionCommand)
 				editorCompletion.RunParameterCompletionCommand ();
 		}
-		
+
+		bool ContainsType (IType testType, IType searchType)
+		{
+			if (testType == searchType)
+				return true;
+			foreach (var arg in testType.TypeArguments)
+				if (ContainsType (arg, searchType))
+					return true;
+			return false;
+		}
+
+		bool RequireGenerics (IMethod method)
+		{
+			if (method.SymbolKind == SymbolKind.Constructor)
+				return method.DeclaringType.TypeParameterCount > 0;
+			var testMethod = method.ReducedFrom ?? method;
+			return testMethod.TypeArguments.Any (t => !testMethod.Parameters.Any (p => ContainsType(p.Type, t)));
+		}
+
 		void SetMember (IEntity entity)
 		{
 			this.Entity = entity;
-			descriptionCreated = false;
-			this.completionString = displayText = entity.Name;
+			this.completionString = displayText = (Entity.SymbolKind == SymbolKind.Constructor ? Entity.DeclaringTypeDefinition : Entity).Name;
 		}
 
 		TypeSystemAstBuilder GetBuilder (ICompilation compilation)
 		{
-			var ctx = editorCompletion.CSharpUnresolvedFile.GetTypeResolveContext (compilation, editorCompletion.Document.Editor.Caret.Location) as CSharpTypeResolveContext;
+			var ctx = editorCompletion.CSharpUnresolvedFile.GetTypeResolveContext (editorCompletion.UnresolvedFileCompilation, editorCompletion.Document.Editor.Caret.Location) as CSharpTypeResolveContext;
 			var state = new CSharpResolver (ctx);
 			var builder = new TypeSystemAstBuilder (state);
 			builder.AddAnnotations = true;
@@ -291,286 +401,348 @@ namespace MonoDevelop.CSharp.Completion
 			}
 
 			public ConversionFlags ConversionFlags { get; set; }
-			
 			#region ConvertEntity
-			public string ConvertEntity(IEntity entity)
+			public string ConvertEntity (IEntity entity)
 			{
 				if (entity == null)
-					throw new ArgumentNullException("entity");
+					throw new ArgumentNullException ("entity");
 				
-				StringWriter writer = new StringWriter();
-				ConvertEntity(entity, new TextWriterOutputFormatter(writer), FormattingOptionsFactory.CreateMono ());
-				return writer.ToString();
+				StringWriter writer = new StringWriter ();
+				ConvertEntity (entity, new TextWriterOutputFormatter (writer), FormattingOptionsFactory.CreateMono ());
+				return writer.ToString ();
 			}
-			
-			public void ConvertEntity(IEntity entity, IOutputFormatter formatter, CSharpFormattingOptions formattingPolicy)
+
+			public void ConvertEntity (IEntity entity, IOutputFormatter formatter, CSharpFormattingOptions formattingPolicy)
 			{
 				if (entity == null)
-					throw new ArgumentNullException("entity");
+					throw new ArgumentNullException ("entity");
 				if (formatter == null)
-					throw new ArgumentNullException("formatter");
+					throw new ArgumentNullException ("formatter");
 				if (formattingPolicy == null)
-					throw new ArgumentNullException("options");
+					throw new ArgumentNullException ("options");
 				
-				TypeSystemAstBuilder astBuilder = CreateAstBuilder();
-				EntityDeclaration node = astBuilder.ConvertEntity(entity);
-				PrintModifiers(node.Modifiers, formatter);
+				TypeSystemAstBuilder astBuilder = CreateAstBuilder ();
+				EntityDeclaration node = astBuilder.ConvertEntity (entity);
+				PrintModifiers (node.Modifiers, formatter);
 				
 				if ((ConversionFlags & ConversionFlags.ShowDefinitionKeyword) == ConversionFlags.ShowDefinitionKeyword) {
 					if (node is TypeDeclaration) {
 						switch (((TypeDeclaration)node).ClassType) {
 						case ClassType.Class:
-							formatter.WriteKeyword("class");
+							formatter.WriteKeyword ("class");
 							break;
 						case ClassType.Struct:
-							formatter.WriteKeyword("struct");
+							formatter.WriteKeyword ("struct");
 							break;
 						case ClassType.Interface:
-							formatter.WriteKeyword("interface");
+							formatter.WriteKeyword ("interface");
 							break;
 						case ClassType.Enum:
-							formatter.WriteKeyword("enum");
+							formatter.WriteKeyword ("enum");
 							break;
 						default:
-							throw new Exception("Invalid value for ClassType");
+							throw new Exception ("Invalid value for ClassType");
 						}
-						formatter.Space();
+						formatter.Space ();
 					} else if (node is DelegateDeclaration) {
-						formatter.WriteKeyword("delegate");
-						formatter.Space();
+						formatter.WriteKeyword ("delegate");
+						formatter.Space ();
 					} else if (node is EventDeclaration) {
-						formatter.WriteKeyword("event");
-						formatter.Space();
+						formatter.WriteKeyword ("event");
+						formatter.Space ();
 					}
 				}
 				
 				if ((ConversionFlags & ConversionFlags.ShowReturnType) == ConversionFlags.ShowReturnType) {
-					var rt = node.GetChildByRole(Roles.Type);
+					var rt = node.GetChildByRole (Roles.Type);
 					if (!rt.IsNull) {
-						rt.AcceptVisitor(new CSharpOutputVisitor(formatter, formattingPolicy));
-						formatter.Space();
+						rt.AcceptVisitor (new CSharpOutputVisitor (formatter, formattingPolicy));
+						formatter.Space ();
 					}
 				}
 				
 				if (entity is ITypeDefinition)
-					WriteTypeDeclarationName((ITypeDefinition)entity, formatter, formattingPolicy);
+					WriteTypeDeclarationName ((ITypeDefinition)entity, formatter, formattingPolicy);
 				else
-					WriteMemberDeclarationName((IMember)entity, formatter, formattingPolicy);
+					WriteMemberDeclarationName ((IMember)entity, formatter, formattingPolicy);
 				
-				if ((ConversionFlags & ConversionFlags.ShowParameterList) == ConversionFlags.ShowParameterList && HasParameters(entity)) {
-					formatter.WriteToken(entity.EntityType == EntityType.Indexer ? "[" : "(");
+				if ((ConversionFlags & ConversionFlags.ShowParameterList) == ConversionFlags.ShowParameterList && HasParameters (entity)) {
+					formatter.WriteToken (entity.SymbolKind == SymbolKind.Indexer ? "[" : "(");
 					bool first = true;
 					foreach (var param in node.GetChildrenByRole(Roles.Parameter)) {
 						if (first) {
 							first = false;
 						} else {
-							formatter.WriteToken(",");
-							formatter.Space();
+							formatter.WriteToken (",");
+							formatter.Space ();
 						}
-						param.AcceptVisitor(new CSharpOutputVisitor(formatter, formattingPolicy));
+						param.AcceptVisitor (new CSharpOutputVisitor (formatter, formattingPolicy));
 					}
-					formatter.WriteToken(entity.EntityType == EntityType.Indexer ? "]" : ")");
+					formatter.WriteToken (entity.SymbolKind == SymbolKind.Indexer ? "]" : ")");
 				}
 				
 				if ((ConversionFlags & ConversionFlags.ShowBody) == ConversionFlags.ShowBody && !(node is TypeDeclaration)) {
 					IProperty property = entity as IProperty;
 					if (property != null) {
-						formatter.Space();
-						formatter.WriteToken("{");
-						formatter.Space();
+						formatter.Space ();
+						formatter.WriteToken ("{");
+						formatter.Space ();
 						if (property.CanGet) {
-							formatter.WriteKeyword("get");
-							formatter.WriteToken(";");
-							formatter.Space();
+							formatter.WriteKeyword ("get");
+							formatter.WriteToken (";");
+							formatter.Space ();
 						}
 						if (property.CanSet) {
-							formatter.WriteKeyword("set");
-							formatter.WriteToken(";");
-							formatter.Space();
+							formatter.WriteKeyword ("set");
+							formatter.WriteToken (";");
+							formatter.Space ();
 						}
-						formatter.WriteToken("}");
+						formatter.WriteToken ("}");
 					} else {
-						formatter.WriteToken(";");
+						formatter.WriteToken (";");
 					}
 				}
 			}
-			
-			bool HasParameters(IEntity e)
+
+			bool HasParameters (IEntity e)
 			{
-				switch (e.EntityType) {
-				case EntityType.TypeDefinition:
+				switch (e.SymbolKind) {
+				case SymbolKind.TypeDefinition:
 					return ((ITypeDefinition)e).Kind == TypeKind.Delegate;
-				case EntityType.Indexer:
-				case EntityType.Method:
-				case EntityType.Operator:
-				case EntityType.Constructor:
-				case EntityType.Destructor:
+				case SymbolKind.Indexer:
+				case SymbolKind.Method:
+				case SymbolKind.Operator:
+				case SymbolKind.Constructor:
+				case SymbolKind.Destructor:
 					return true;
 				default:
 					return false;
 				}
 			}
-			
-			TypeSystemAstBuilder CreateAstBuilder()
+			public string ConvertConstantValue (object constantValue)
+			{
+				if (constantValue == null)
+					return "null";
+				return constantValue.ToString ();
+			}
+
+			TypeSystemAstBuilder CreateAstBuilder ()
 			{
 				return builder;
 			}
-			
-			void WriteTypeDeclarationName(ITypeDefinition typeDef, IOutputFormatter formatter, CSharpFormattingOptions formattingPolicy)
+
+			void WriteTypeDeclarationName (ITypeDefinition typeDef, IOutputFormatter formatter, CSharpFormattingOptions formattingPolicy)
 			{
-				TypeSystemAstBuilder astBuilder = CreateAstBuilder();
+				TypeSystemAstBuilder astBuilder = CreateAstBuilder ();
 				if (typeDef.DeclaringTypeDefinition != null) {
-					WriteTypeDeclarationName(typeDef.DeclaringTypeDefinition, formatter, formattingPolicy);
-					formatter.WriteToken(".");
+					WriteTypeDeclarationName (typeDef.DeclaringTypeDefinition, formatter, formattingPolicy);
+					formatter.WriteToken (".");
 				} else if ((ConversionFlags & ConversionFlags.UseFullyQualifiedTypeNames) == ConversionFlags.UseFullyQualifiedTypeNames) {
-					formatter.WriteIdentifier(typeDef.Namespace);
-					formatter.WriteToken(".");
+					formatter.WriteIdentifier (typeDef.Namespace);
+					formatter.WriteToken (".");
 				}
-				formatter.WriteIdentifier(typeDef.Name);
+				formatter.WriteIdentifier (typeDef.Name);
 				if ((ConversionFlags & ConversionFlags.ShowTypeParameterList) == ConversionFlags.ShowTypeParameterList) {
-					var outputVisitor = new CSharpOutputVisitor(formatter, formattingPolicy);
-					outputVisitor.WriteTypeParameters(astBuilder.ConvertEntity(typeDef).GetChildrenByRole(Roles.TypeParameter));
+					var outputVisitor = new CSharpOutputVisitor (formatter, formattingPolicy);
+					outputVisitor.WriteTypeParameters (astBuilder.ConvertEntity (typeDef).GetChildrenByRole (Roles.TypeParameter));
 				}
 			}
-			
-			void WriteMemberDeclarationName(IMember member, IOutputFormatter formatter, CSharpFormattingOptions formattingPolicy)
+
+			void WriteMemberDeclarationName (IMember member, IOutputFormatter formatter, CSharpFormattingOptions formattingPolicy)
 			{
-				TypeSystemAstBuilder astBuilder = CreateAstBuilder();
+				TypeSystemAstBuilder astBuilder = CreateAstBuilder ();
 				if ((ConversionFlags & ConversionFlags.ShowDeclaringType) == ConversionFlags.ShowDeclaringType) {
-					ConvertType(member.DeclaringType, formatter, formattingPolicy);
-					formatter.WriteToken(".");
+					ConvertType (member.DeclaringType, formatter, formattingPolicy);
+					formatter.WriteToken (".");
 				}
-				switch (member.EntityType) {
-				case EntityType.Indexer:
-					formatter.WriteKeyword("this");
+				switch (member.SymbolKind) {
+				case SymbolKind.Indexer:
+					formatter.WriteKeyword ("this");
 					break;
-				case EntityType.Constructor:
-					formatter.WriteIdentifier(member.DeclaringType.Name);
+				case SymbolKind.Constructor:
+					formatter.WriteIdentifier (member.DeclaringType.Name);
 					break;
-				case EntityType.Destructor:
-					formatter.WriteToken("~");
-					formatter.WriteIdentifier(member.DeclaringType.Name);
+				case SymbolKind.Destructor:
+					formatter.WriteToken ("~");
+					formatter.WriteIdentifier (member.DeclaringType.Name);
 					break;
-				case EntityType.Operator:
+				case SymbolKind.Operator:
 					switch (member.Name) {
 					case "op_Implicit":
-						formatter.WriteKeyword("implicit");
-						formatter.Space();
-						formatter.WriteKeyword("operator");
-						formatter.Space();
-						ConvertType(member.ReturnType, formatter, formattingPolicy);
+						formatter.WriteKeyword ("implicit");
+						formatter.Space ();
+						formatter.WriteKeyword ("operator");
+						formatter.Space ();
+						ConvertType (member.ReturnType, formatter, formattingPolicy);
 						break;
 					case "op_Explicit":
-						formatter.WriteKeyword("explicit");
-						formatter.Space();
-						formatter.WriteKeyword("operator");
-						formatter.Space();
-						ConvertType(member.ReturnType, formatter, formattingPolicy);
+						formatter.WriteKeyword ("explicit");
+						formatter.Space ();
+						formatter.WriteKeyword ("operator");
+						formatter.Space ();
+						ConvertType (member.ReturnType, formatter, formattingPolicy);
 						break;
 					default:
-						formatter.WriteKeyword("operator");
-						formatter.Space();
-						var operatorType = OperatorDeclaration.GetOperatorType(member.Name);
+						formatter.WriteKeyword ("operator");
+						formatter.Space ();
+						var operatorType = OperatorDeclaration.GetOperatorType (member.Name);
 						if (operatorType.HasValue)
-							formatter.WriteToken(OperatorDeclaration.GetToken(operatorType.Value));
+							formatter.WriteToken (OperatorDeclaration.GetToken (operatorType.Value));
 						else
-							formatter.WriteIdentifier(member.Name);
+							formatter.WriteIdentifier (member.Name);
 						break;
 					}
 					break;
 				default:
-					formatter.WriteIdentifier(member.Name);
+					formatter.WriteIdentifier (member.Name);
 					break;
 				}
-				if ((ConversionFlags & ConversionFlags.ShowTypeParameterList) == ConversionFlags.ShowTypeParameterList && member.EntityType == EntityType.Method) {
-					var outputVisitor = new CSharpOutputVisitor(formatter, formattingPolicy);
-					outputVisitor.WriteTypeParameters(astBuilder.ConvertEntity(member).GetChildrenByRole(Roles.TypeParameter));
+				if ((ConversionFlags & ConversionFlags.ShowTypeParameterList) == ConversionFlags.ShowTypeParameterList && member.SymbolKind == SymbolKind.Method) {
+					var outputVisitor = new CSharpOutputVisitor (formatter, formattingPolicy);
+					outputVisitor.WriteTypeParameters (astBuilder.ConvertEntity (member).GetChildrenByRole (Roles.TypeParameter));
 				}
 			}
-			
-			void PrintModifiers(Modifiers modifiers, IOutputFormatter formatter)
+
+			void PrintModifiers (Modifiers modifiers, IOutputFormatter formatter)
 			{
 				foreach (var m in CSharpModifierToken.AllModifiers) {
 					if ((modifiers & m) == m) {
-						formatter.WriteKeyword(CSharpModifierToken.GetModifierName(m));
-						formatter.Space();
+						formatter.WriteKeyword (CSharpModifierToken.GetModifierName (m));
+						formatter.Space ();
 					}
 				}
 			}
 #endregion
 			
-			public string ConvertVariable(IVariable v)
+			public string ConvertVariable (IVariable v)
 			{
-				TypeSystemAstBuilder astBuilder = CreateAstBuilder();
-				AstNode astNode = astBuilder.ConvertVariable(v);
-				return astNode.GetText().TrimEnd(';', '\r', '\n');
+				TypeSystemAstBuilder astBuilder = CreateAstBuilder ();
+				AstNode astNode = astBuilder.ConvertVariable (v);
+				return astNode.ToString ().TrimEnd (';', '\r', '\n');
 			}
-			
-			public string ConvertType(IType type)
+
+			public string ConvertType (IType type)
 			{
 				if (type == null)
-					throw new ArgumentNullException("type");
+					throw new ArgumentNullException ("type");
 				
-				TypeSystemAstBuilder astBuilder = CreateAstBuilder();
-				AstType astType = astBuilder.ConvertType(type);
-				return astType.GetText();
+				TypeSystemAstBuilder astBuilder = CreateAstBuilder ();
+				AstType astType = astBuilder.ConvertType (type);
+				return astType.ToString ();
 			}
-			
-			public void ConvertType(IType type, IOutputFormatter formatter, CSharpFormattingOptions formattingPolicy)
+
+			public void ConvertType (IType type, IOutputFormatter formatter, CSharpFormattingOptions formattingPolicy)
 			{
-				TypeSystemAstBuilder astBuilder = CreateAstBuilder();
-				AstType astType = astBuilder.ConvertType(type);
-				astType.AcceptVisitor(new CSharpOutputVisitor(formatter, formattingPolicy));
+				TypeSystemAstBuilder astBuilder = CreateAstBuilder ();
+				AstType astType = astBuilder.ConvertType (type);
+				astType.AcceptVisitor (new CSharpOutputVisitor (formatter, formattingPolicy));
 			}
-			
-			public string WrapComment(string comment)
+
+			public string WrapComment (string comment)
 			{
 				return "// " + comment;
 			}
 		}
-		void CheckDescription ()
+
+		public static TooltipInformation CreateTooltipInformation (CSharpCompletionTextEditorExtension editorCompletion, CSharpResolver resolver, IEntity entity, bool smartWrap)
 		{
-			if (descriptionCreated)
-				return;
-			
-			var sb = new StringBuilder ();
-
-			descriptionCreated = true;
-			if (Entity is IMethod && ((IMethod)Entity).IsExtensionMethod)
-				sb.Append (GettextCatalog.GetString ("(Extension) "));
-			try {
-				var amb = new MyAmbience (GetBuilder (Entity.Compilation));
-				sb.Append (GLib.Markup.EscapeText (amb.ConvertEntity (Entity)));
-			} catch (Exception e) {
-				sb.Append (e.ToString ());
-			}
-
-			var m = (IMember)Entity;
-			if (m.IsObsolete ()) {
-				sb.AppendLine ();
-				sb.Append (GettextCatalog.GetString ("[Obsolete]"));
-				DisplayFlags |= DisplayFlags.Obsolete;
-			}
-			
-			var returnType = m.ReturnType;
-			if (returnType.Kind == TypeKind.Delegate) {
-				sb.AppendLine ();
-				sb.AppendLine (GettextCatalog.GetString ("Delegate information"));
-				sb.Append (ambience.GetString (returnType, OutputFlags.ReformatDelegates | OutputFlags.IncludeReturnType | OutputFlags.IncludeParameters | OutputFlags.IncludeParameterName));
-			}
-			
-			string docMarkup = AmbienceService.GetDocumentationMarkup ("<summary>" + AmbienceService.GetDocumentationSummary ((IMember)Entity) + "</summary>", new AmbienceService.DocumentationFormatOptions {
-				Ambience = ambience
-			});
-			
-			if (!string.IsNullOrEmpty (docMarkup)) {
-				sb.AppendLine ();
-				sb.Append (docMarkup);
-			}
-			description = sb.ToString ();
+			return CreateTooltipInformation (editorCompletion.UnresolvedFileCompilation, editorCompletion.CSharpUnresolvedFile, resolver, editorCompletion.TextEditorData, editorCompletion.FormattingPolicy, entity, smartWrap);
 		}
-		
 
+		public static TooltipInformation CreateTooltipInformation (ICompilation compilation, CSharpUnresolvedFile file, TextEditorData textEditorData, MonoDevelop.CSharp.Formatting.CSharpFormattingPolicy formattingPolicy, IEntity entity, bool smartWrap, bool createFooter = false)
+		{
+			return CreateTooltipInformation (compilation, file, null, textEditorData, formattingPolicy, entity, smartWrap, createFooter);
+		}
+
+		public static TooltipInformation CreateTooltipInformation (ICompilation compilation, CSharpUnresolvedFile file, CSharpResolver resolver, TextEditorData textEditorData, MonoDevelop.CSharp.Formatting.CSharpFormattingPolicy formattingPolicy, IEntity entity, bool smartWrap, bool createFooter = false)
+		{
+			var tooltipInfo = new TooltipInformation ();
+			if (resolver == null)
+				resolver = file != null ? file.GetResolver (compilation, textEditorData.Caret.Location) : new CSharpResolver (compilation);
+			var sig = new SignatureMarkupCreator (resolver, formattingPolicy.CreateOptions ());
+			sig.BreakLineAfterReturnType = smartWrap;
+			try {
+				tooltipInfo.SignatureMarkup = sig.GetMarkup (entity);
+			} catch (Exception e) {
+				LoggingService.LogError ("Got exception while creating markup for :" + entity, e);
+				return new TooltipInformation ();
+			}
+			tooltipInfo.SummaryMarkup = AmbienceService.GetSummaryMarkup (entity) ?? "";
+			
+			if (entity is IMember) {
+				var evt = (IMember)entity;
+				if (evt.ReturnType.Kind == TypeKind.Delegate) {
+					tooltipInfo.AddCategory (GettextCatalog.GetString ("Delegate Info"), sig.GetDelegateInfo (evt.ReturnType));
+				}
+			}
+			if (entity is IMethod) {
+				var method = (IMethod)entity;
+				if (method.IsExtensionMethod) {
+					tooltipInfo.AddCategory (GettextCatalog.GetString ("Extension Method from"), method.DeclaringTypeDefinition.FullName);
+				}
+			}
+			if (createFooter) {
+				if (entity is IType) {
+					var type = entity as IType;
+					var def = type.GetDefinition ();
+					if (def != null) {
+						if (!string.IsNullOrEmpty (def.ParentAssembly.AssemblyName)) {
+							var project = def.GetSourceProject ();
+							if (project != null) {
+								var relPath = FileService.AbsoluteToRelativePath (project.BaseDirectory, def.Region.FileName);
+								tooltipInfo.FooterMarkup = "<small>" + GettextCatalog.GetString ("Project:\t{0}", AmbienceService.EscapeText (def.ParentAssembly.AssemblyName)) + "</small>" + Environment.NewLine +
+									"<small>" + GettextCatalog.GetString ("File:\t\t{0} (line {1})", AmbienceService.EscapeText (relPath), def.Region.Begin.Line) + "</small>";
+							}
+						}
+					}
+
+				} else if (entity.DeclaringTypeDefinition != null) {
+					var project = entity.DeclaringTypeDefinition.GetSourceProject ();
+					if (project != null) {
+						var relPath = FileService.AbsoluteToRelativePath (project.BaseDirectory, entity.Region.FileName);
+						tooltipInfo.FooterMarkup = 
+							"<small>" + GettextCatalog.GetString ("Project:\t{0}", AmbienceService.EscapeText (project.Name)) + "</small>" + Environment.NewLine +
+							"<small>" + GettextCatalog.GetString ("From:\t{0}", AmbienceService.EscapeText (entity.DeclaringType.FullName)) + "</small>" + Environment.NewLine +
+							"<small>" + GettextCatalog.GetString ("File:\t\t{0} (line {1})", AmbienceService.EscapeText (relPath), entity.Region.Begin.Line) + "</small>";
+					}
+				}
+			}
+			return tooltipInfo;
+		}
+
+		public static TooltipInformation CreateTooltipInformation (ICompilation compilation, CSharpUnresolvedFile file, TextEditorData textEditorData, MonoDevelop.CSharp.Formatting.CSharpFormattingPolicy formattingPolicy, IType type, bool smartWrap, bool createFooter = false)
+		{
+			var tooltipInfo = new TooltipInformation ();
+			var resolver = file != null ? file.GetResolver (compilation, textEditorData.Caret.Location) : new CSharpResolver (compilation);
+			var sig = new SignatureMarkupCreator (resolver, formattingPolicy.CreateOptions ());
+			sig.BreakLineAfterReturnType = smartWrap;
+			try {
+				tooltipInfo.SignatureMarkup = sig.GetMarkup (type.IsParameterized ? type.GetDefinition () : type);
+			} catch (Exception e) {
+				LoggingService.LogError ("Got exception while creating markup for :" + type, e);
+				return new TooltipInformation ();
+			}
+			if (type.IsParameterized) {
+				var typeInfo = new StringBuilder ();
+				for (int i = 0; i < type.TypeParameterCount; i++) {
+					typeInfo.AppendLine (type.GetDefinition ().TypeParameters [i].Name + " is " + sig.GetTypeReferenceString (type.TypeArguments [i]));
+				}
+				tooltipInfo.AddCategory ("Type Parameters", typeInfo.ToString ());
+			}
+
+			var def = type.GetDefinition ();
+			if (def != null) {
+				if (createFooter && !string.IsNullOrEmpty (def.ParentAssembly.AssemblyName))
+					tooltipInfo.FooterMarkup = "<small> From " + AmbienceService.EscapeText (def.ParentAssembly.AssemblyName) + "</small>";
+				tooltipInfo.SummaryMarkup = AmbienceService.GetSummaryMarkup (def) ?? "";
+			}
+			return tooltipInfo;
+		}
+
+		public override TooltipInformation CreateTooltipInformation (bool smartWrap)
+		{
+			return CreateTooltipInformation (compilation, file, editorCompletion.TextEditorData, editorCompletion.FormattingPolicy, Entity, smartWrap);
+		}
 		#region IOverloadedCompletionData implementation 
 	
 		class OverloadSorter : IComparer<ICompletionData>
@@ -578,7 +750,7 @@ namespace MonoDevelop.CSharp.Completion
 			public OverloadSorter ()
 			{
 			}
-			
+
 			public int Compare (ICompletionData x, ICompletionData y)
 			{
 				var mx = ((MemberCompletionData)x).Entity as IMember;
@@ -592,22 +764,15 @@ namespace MonoDevelop.CSharp.Completion
 				}
 				
 				if (mx is IMethod && my is IMethod) {
-					IMethod mmx = (IMethod) mx;//, mmy = (IMethod) my;
-					result = (mmx.TypeParameters.Count).CompareTo (mmx.TypeParameters.Count);
-					if (result != 0)
-						return result;
-					result = (mmx.Parameters.Count).CompareTo (mmx.Parameters.Count);
-					if (result != 0)
-						return result;
+					return MethodParameterDataProvider.MethodComparer ((IMethod)mx, (IMethod)my);
 				}
-				
 				string sx = mx.ReflectionName;// ambience.GetString (mx, flags);
 				string sy = my.ReflectionName;// ambience.GetString (my, flags);
 				result = sx.Length.CompareTo (sy.Length);
-				return result == 0? string.Compare (sx, sy) : result;
+				return result == 0 ? string.Compare (sx, sy) : result;
 			}
 		}
-		
+
 		public override IEnumerable<ICompletionData> OverloadedData {
 			get {
 				if (overloads == null)
@@ -619,74 +784,38 @@ namespace MonoDevelop.CSharp.Completion
 				return sorted;
 			}
 		}
-		
+
 		public override bool HasOverloads {
 			get { return overloads != null && overloads.Count > 0; }
 		}
-		
+
 		public override void AddOverload (ICSharpCode.NRefactory.Completion.ICompletionData data)
 		{
-			AddOverload ((MemberCompletionData) data);
+			AddOverload ((MemberCompletionData)data);
 		}
-		
+
 		public void AddOverload (MemberCompletionData overload)
 		{
 			if (overloads == null)
 				overloads = new Dictionary<string, CompletionData> ();
 			
 			if (overload.Entity is IMember && Entity is IMember) {
-				// filter virtual & overriden members that came from base classes
+				// filter overriden members that came from base classes
 				// note that the overload tree is traversed top down.
 				var member = Entity as IMember;
-				if ((member.IsVirtual || member.IsOverride) && member.DeclaringType != null && ((IMember)overload.Entity).DeclaringType != null && member.DeclaringType.ReflectionName != ((IMember)overload.Entity).DeclaringType.ReflectionName) {
-					string str1 = ambience.GetString (member as IMember, flags);
-					string str2 = ambience.GetString (overload.Entity as IMember, flags);
-					if (str1 == str2) {
-						if (string.IsNullOrEmpty (AmbienceService.GetDocumentationSummary ((IMember)Entity)) && !string.IsNullOrEmpty (AmbienceService.GetDocumentationSummary ((IMember)overload.Entity)))
-							SetMember (overload.Entity as IMember);
-						return;
-					}
-				}
-				
+				if (member.IsOverride)
+					return;
+
 				string MemberId = (overload.Entity as IMember).GetIdString ();
-				if (Entity is IMethod && overload.Entity is IMethod) {
-					string signature1 = ambience.GetString (Entity as IMember, OutputFlags.IncludeParameters | OutputFlags.IncludeGenerics | OutputFlags.GeneralizeGenerics);
-					string signature2 = ambience.GetString (overload.Entity as IMember, OutputFlags.IncludeParameters | OutputFlags.IncludeGenerics | OutputFlags.GeneralizeGenerics);
-					if (signature1 == signature2)
-						return;
-				}
-				
 				if (MemberId != (this.Entity as IMember).GetIdString () && !overloads.ContainsKey (MemberId)) {
-//					if (((IMethod)overload.Member).IsPartial)
-//						return;
-					overloads[MemberId] = overload;
+					overloads [MemberId] = overload;
 					
 					//if any of the overloads is obsolete, we should not mark the item obsolete
 					if (!(overload.Entity as IMember).IsObsolete ())
 						DisplayFlags &= ~DisplayFlags.Obsolete;
-/*					
-					//make sure that if there are generic overloads, we show a generic signature
-					if (overload.Member is IType && Member is IType && ((IType)Member).TypeParameters.Count == 0 && ((IType)overload.Member).TypeParameters.Count > 0) {
-						displayText = overload.DisplayText;
-					}
-					if (overload.Member is IMethod && Member is IMethod && ((IMethod)Member).TypeParameters.Count == 0 && ((IMethod)overload.Member).TypeParameters.Count > 0) {
-						displayText = overload.DisplayText;
-					}*/
 				}
 			}
-			
-			
-			// always set the member with the least type parameters as the main member.
-//			if (Member is ITypeParameterMember && overload.Member is ITypeParameterMember) {
-//				if (((ITypeParameterMember)Member).TypeParameters.Count > ((ITypeParameterMember)overload.Member).TypeParameters.Count) {
-//					INode member = Member;
-//					SetMember (overload.Member);
-//					overload.Member = member;
-//				}
-//			}
-			
 		}
-		
 		#endregion
 
 		#region IEntityCompletionData implementation
@@ -696,6 +825,33 @@ namespace MonoDevelop.CSharp.Completion
 		}
 		#endregion
 
+		public override int CompareTo (object obj)
+		{
+			int result = base.CompareTo (obj);
+			if (result == 0) {
+				var mcd = obj as MemberCompletionData;
+				if (mcd != null) {
+					var mc = mcd;
+					if (this.Entity.SymbolKind == SymbolKind.Method) {
+						var method = (IMethod)this.Entity;
+						if (method.IsExtensionMethod)
+							return 1;
+					}
+					if (mc.Entity.SymbolKind == SymbolKind.Method) {
+						var method = (IMethod)mc.Entity;
+						if (method.IsExtensionMethod)
+							return -1;
+					}
+				} else {
+					return -1;
+				}
+			}
+			return result;
+		}
 
+		public override string ToString ()
+		{
+			return string.Format ("[MemberCompletionData: Entity={0}]", Entity);
+		}
 	}
 }

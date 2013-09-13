@@ -24,37 +24,10 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using MonoDevelop.Components.Commands;
-using MonoDevelop.Ide.Gui;
-using MonoDevelop.Ide.CodeCompletion;
-using MonoDevelop.Ide;
-
 namespace MonoDevelop.CodeGeneration
 {
-	public enum CodeGenerationCommands
+	enum CodeGenerationCommands
 	{
 		ShowCodeGenerationWindow
-	}
-
-	public class ShowCodeGenerationWindowHandler : CommandHandler
-	{
-		protected override void Run ()
-		{
-			Document document = IdeApp.Workbench.ActiveDocument;
-			if (document == null)
-				return;
-			var completionWidget = document.GetContent<ICompletionWidget> ();
-			if (completionWidget == null)
-				return;
-			CodeCompletionContext completionContext = completionWidget.CreateCodeCompletionContext (document.Editor.Caret.Offset);
-			GenerateCodeWindow.ShowIfValid (document, completionContext);
-		}
-		
-		protected override void Update (CommandInfo info)
-		{
-			Document document = IdeApp.Workbench.ActiveDocument;
-			info.Enabled = document != null && document.Editor != null
-				&& document.Editor.HasFocus && document.GetContent<ICompletionWidget> () != null;
-		}
 	}
 }

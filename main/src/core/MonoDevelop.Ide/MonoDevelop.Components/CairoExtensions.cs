@@ -32,6 +32,8 @@ using System.Runtime.InteropServices;
 
 using Gdk;
 using Cairo;
+using MonoDevelop.Core;
+using Mono.TextEditor;
 
 namespace MonoDevelop.Components
 {
@@ -48,7 +50,12 @@ namespace MonoDevelop.Components
 
     public static class CairoExtensions
     {
-        public static Pango.Layout CreateLayout (Gtk.Widget widget, Cairo.Context cairo_context)
+		public static Cairo.Rectangle ToCairoRect (this Gdk.Rectangle rect)
+		{
+			return new Cairo.Rectangle (rect.X, rect.Y, rect.Width, rect.Height);
+		}
+
+		public static Pango.Layout CreateLayout (Gtk.Widget widget, Cairo.Context cairo_context)
         {
             Pango.Layout layout = PangoCairoHelper.CreateLayout (cairo_context);
             layout.FontDescription = widget.PangoContext.FontDescription.Copy ();
@@ -63,13 +70,17 @@ namespace MonoDevelop.Components
             return layout;
         }
 
-        public static Surface CreateSurfaceForPixbuf (Cairo.Context cr, Gdk.Pixbuf pixbuf)
+        public static Surface CreateSurfaceForPixbuf (Context cr, Pixbuf pixbuf)
         {
-            Surface surface = cr.Target.CreateSimilar (cr.Target.Content, pixbuf.Width, pixbuf.Height);
-            Cairo.Context surface_cr = new Context (surface);
-            Gdk.CairoHelper.SetSourcePixbuf (surface_cr, pixbuf, 0, 0);
-            surface_cr.Paint ();
-            ((IDisposable)surface_cr).Dispose ();
+			Surface surface;
+			using (var t = cr.GetTarget ()) {
+				surface = t.CreateSimilar (t.Content, pixbuf.Width, pixbuf.Height);
+			}
+			using (Context surface_cr = new Context (surface)) {
+				CairoHelper.SetSourcePixbuf (surface_cr, pixbuf, 0, 0);
+				surface_cr.Paint ();
+				surface_cr.Dispose ();
+			}
             return surface;
         }
 
@@ -112,6 +123,14 @@ namespace MonoDevelop.Components
                 (byte)(rgbaColor >> 8) / 255.0,
                 (byte)(rgbaColor & 0x000000ff) / 255.0);
         }
+
+		public static Cairo.Color InterpolateColors (Cairo.Color start, Cairo.Color end, float amount)
+		{
+			return new Cairo.Color (start.R + (end.R - start.R) * amount,
+			                        start.G + (end.G - start.G) * amount,
+			                        start.B + (end.B - start.B) * amount,
+			                        start.A + (end.A - start.A) * amount);
+		}
 
         public static bool ColorIsDark (Cairo.Color color)
         {
@@ -249,18 +268,18 @@ namespace MonoDevelop.Components
             }
         }
 
-        public static void RoundedRectangle(Cairo.Context cr, double x, double y, double w, double h, double r)
+        public static void RoundedRectangle(this Cairo.Context cr, double x, double y, double w, double h, double r)
         {
             RoundedRectangle(cr, x, y, w, h, r, CairoCorners.All, false);
         }
 
-        public static void RoundedRectangle(Cairo.Context cr, double x, double y, double w, double h,
+		public static void RoundedRectangle(this Cairo.Context cr, double x, double y, double w, double h,
             double r, CairoCorners corners)
         {
             RoundedRectangle(cr, x, y, w, h, r, corners, false);
         }
 
-        public static void RoundedRectangle(Cairo.Context cr, double x, double y, double w, double h,
+		public static void RoundedRectangle(this Cairo.Context cr, double x, double y, double w, double h,
             double r, CairoCorners corners, bool topBottomFallsThrough)
         {
             if(topBottomFallsThrough && corners == CairoCorners.None) {
@@ -319,10 +338,117 @@ namespace MonoDevelop.Components
             }
         }
 
+		static void ShadowGradient (Cairo.Gradient lg, double strength)
+		{
+			lg.AddColorStop (0, new Cairo.Color (0, 0, 0, strength));
+			lg.AddColorStop (1.0/6.0, new Cairo.Color (0, 0, 0, .85 * strength));
+			lg.AddColorStop (2.0/6.0, new Cairo.Color (0, 0, 0, .54 * strength));
+			lg.AddColorStop (3.0/6.0, new Cairo.Color (0, 0, 0, .24 * strength));
+			lg.AddColorStop (4.0/6.0, new Cairo.Color (0, 0, 0, .07 * strength));
+			lg.AddColorStop (5.0/6.0, new Cairo.Color (0, 0, 0, .01 * strength));
+			lg.AddColorStop (1, new Cairo.Color (0, 0, 0, 0));
+		}
+
+		// VERY SLOW, only use on cached renders
+		public static void RenderOuterShadow (this Cairo.Context self, Gdk.Rectangle area, int size, int rounding, double strength)
+		{
+			area.Inflate (-1, -1);
+			size++;
+
+			int doubleRounding = rounding * 2;
+			// left side
+			self.Rectangle (area.X - size, area.Y + rounding, size, area.Height - doubleRounding - 1);
+			using (var lg = new LinearGradient (area.X, 0, area.X - size, 0)) {
+				ShadowGradient (lg, strength);
+				self.SetSource (lg);
+				self.Fill ();
+			}
+
+			// right side
+			self.Rectangle (area.Right, area.Y + rounding, size, area.Height - doubleRounding - 1);
+			using (var lg = new LinearGradient (area.Right, 0, area.Right + size, 0)) {
+				ShadowGradient (lg, strength);
+				self.SetSource (lg);
+				self.Fill ();
+			}
+
+			// top side
+			self.Rectangle (area.X + rounding, area.Y - size, area.Width - doubleRounding - 1, size);
+			using (var lg = new LinearGradient (0, area.Y, 0, area.Y - size)) {
+				ShadowGradient (lg, strength);
+				self.SetSource (lg);
+				self.Fill ();
+			}
+
+			// bottom side
+			self.Rectangle (area.X + rounding, area.Bottom, area.Width - doubleRounding - 1, size);
+			using (var lg = new LinearGradient (0, area.Bottom, 0, area.Bottom + size)) {
+				ShadowGradient (lg, strength);
+				self.SetSource (lg);
+				self.Fill ();
+			}
+
+			// top left corner
+			self.Rectangle (area.X - size, area.Y - size, size + rounding, size + rounding);
+			using (var rg = new RadialGradient (area.X + rounding, area.Y + rounding, rounding, area.X + rounding, area.Y + rounding, size + rounding)) {
+				ShadowGradient (rg, strength);
+				self.SetSource (rg);
+				self.Fill ();
+			}
+
+			// top right corner
+			self.Rectangle (area.Right - rounding, area.Y - size, size + rounding, size + rounding);
+			using (var rg = new RadialGradient (area.Right - rounding, area.Y + rounding, rounding, area.Right - rounding, area.Y + rounding, size + rounding)) {
+				ShadowGradient (rg, strength);
+				self.SetSource (rg);
+				self.Fill ();
+			}
+
+			// bottom left corner
+			self.Rectangle (area.X - size, area.Bottom - rounding, size + rounding, size + rounding);
+			using (var rg = new RadialGradient (area.X + rounding, area.Bottom - rounding, rounding, area.X + rounding, area.Bottom - rounding, size + rounding)) {
+				ShadowGradient (rg, strength);
+				self.SetSource (rg);
+				self.Fill ();
+			}
+
+			// bottom right corner
+			self.Rectangle (area.Right - rounding, area.Bottom - rounding, size + rounding, size + rounding);
+			using (var rg = new RadialGradient (area.Right - rounding, area.Bottom - rounding, rounding, area.Right - rounding, area.Bottom - rounding, size + rounding)) {
+				ShadowGradient (rg, strength);
+				self.SetSource (rg);
+				self.Fill ();
+			}
+		}
+
+		[DllImport ("libcairo-2.dll", CallingConvention = CallingConvention.Cdecl)]
+		static extern IntPtr cairo_pattern_set_extend(IntPtr pattern, CairoExtend extend);
+
+		[DllImport ("libcairo-2.dll", CallingConvention=CallingConvention.Cdecl)]
+		internal static extern IntPtr cairo_get_source (IntPtr cr);
+
+		enum CairoExtend {
+			CAIRO_EXTEND_NONE,
+			CAIRO_EXTEND_REPEAT,
+			CAIRO_EXTEND_REFLECT,
+			CAIRO_EXTEND_PAD
+		}
+
+		public static void RenderTiled (this Cairo.Context self, Gdk.Pixbuf source, Gdk.Rectangle area, Gdk.Rectangle clip, double opacity = 1)
+		{
+			Gdk.CairoHelper.SetSourcePixbuf (self, source, area.X, area.Y);
+			//NOTE: Mono.Cairo.Context.Pattern returns an object than cannot be safely disposed, so P/Invoke directly
+			var pattern = cairo_get_source (self.Handle);
+			cairo_pattern_set_extend (pattern, CairoExtend.CAIRO_EXTEND_REPEAT);
+			self.Rectangle (clip.ToCairoRect ());
+			self.Clip ();
+			self.PaintWithAlpha (opacity);
+			self.ResetClip ();
+		}
+
         public static void DisposeContext (Cairo.Context cr)
         {
-            ((IDisposable)cr.Target).Dispose ();
-            ((IDisposable)cr).Dispose ();
+            cr.Dispose ();
         }
 
         private struct CairoInteropCall
@@ -386,19 +512,19 @@ namespace MonoDevelop.Components
         private static CairoInteropCall cairo_pop_group_to_source_call = new CairoInteropCall ("PopGroupToSource");
 
         public static void PopGroupToSource (Cairo.Context cr)
-        {
-            if (!native_push_pop_exists) {
-                return;
-            }
+		{
+			if (!native_push_pop_exists) {
+				return;
+			}
 
-            try {
-                if (!CallCairoMethod (cr, ref cairo_pop_group_to_source_call)) {
-                    cairo_pop_group_to_source (cr.Handle);
-                }
-            } catch (EntryPointNotFoundException) {
-                native_push_pop_exists = false;
-            }
-        }
+			try {
+				if (!CallCairoMethod (cr, ref cairo_pop_group_to_source_call)) {
+					cairo_pop_group_to_source (cr.Handle);
+				}
+			} catch (EntryPointNotFoundException) {
+				native_push_pop_exists = false;
+			}
+		}
 
 		public static Cairo.Color ParseColor (string s, double alpha = 1)
 		{
@@ -430,20 +556,76 @@ namespace MonoDevelop.Components
 			System.IO.File.Delete (tmp);
 			return img;
 		}
+
+		public static Cairo.Color MultiplyAlpha (this Cairo.Color self, double alpha)
+		{
+			return new Cairo.Color (self.R, self.G, self.B, self.A * alpha);
+		}
+
+		public static void CachedDraw (this Cairo.Context self, ref SurfaceWrapper surface, Gdk.Point position, Gdk.Size size, 
+		                               object parameters = null, float opacity = 1.0f, Action<Cairo.Context, float> draw = null, double? forceScale = null)
+		{
+			self.CachedDraw (ref surface, new Gdk.Rectangle (position, size), parameters, opacity, draw, forceScale);
+		}
+
+		public static void CachedDraw (this Cairo.Context self, ref SurfaceWrapper surface, Gdk.Rectangle region, 
+		                               object parameters = null, float opacity = 1.0f, Action<Cairo.Context, float> draw = null, double? forceScale = null)
+		{
+			double displayScale = forceScale.HasValue ? forceScale.Value : QuartzSurface.GetRetinaScale (self);
+			int targetWidth = (int) (region.Width * displayScale);
+			int targetHeight = (int) (region.Height * displayScale);
+
+			bool redraw = false;
+			if (surface == null || surface.Width != targetWidth || surface.Height != targetHeight) {
+				if (surface != null)
+					surface.Dispose ();
+				surface = new SurfaceWrapper (self, targetWidth, targetHeight);
+				redraw = true;
+			} else if ((surface.Data == null && parameters != null) || (surface.Data != null && !surface.Data.Equals (parameters))) {
+				redraw = true;
+			}
+
+
+			if (redraw) {
+				surface.Data = parameters;
+				using (var context = new Cairo.Context (surface.Surface)) {
+					context.Operator = Operator.Clear;
+					context.Paint();
+					context.Operator = Operator.Over;
+					context.Save ();
+					context.Scale (displayScale, displayScale);
+					draw(context, 1.0f);
+					context.Restore ();
+				}
+			}
+
+			self.Save ();
+			self.Translate (region.X, region.Y);
+			self.Scale (1 / displayScale, 1 / displayScale);
+			self.SetSourceSurface (surface.Surface, 0, 0);
+			self.PaintWithAlpha (opacity);
+			self.Restore ();
+		}
 	}
 
-	class SurfaceWrapper
+	public class SurfaceWrapper : IDisposable
 	{
 		public Cairo.Surface Surface { get; private set; }
 		public int Width { get; private set; }
 		public int Height { get; private set; }
+		public object Data { get; set; }
 
 		public SurfaceWrapper (Cairo.Context similar, int width, int height)
 		{
-			if (MonoDevelop.Core.Platform.IsMac)
+			if (Platform.IsMac) {
 				Surface = new QuartzSurface (Cairo.Format.ARGB32, width, height);
-			else
-				Surface = similar.Target.CreateSimilar (Cairo.Content.ColorAlpha, width, height);
+			} else if (Platform.IsWindows) {
+				using (var target = similar.GetTarget ()) {
+					Surface = target.CreateSimilar (Cairo.Content.ColorAlpha, width, height);
+				}
+			} else {
+				Surface = new ImageSurface (Cairo.Format.ARGB32, width, height);
+			}
 			Width = width;
 			Height = height;
 		}
@@ -452,12 +634,17 @@ namespace MonoDevelop.Components
 		{
 			Cairo.Surface surface;
 			// There is a bug in Cairo for OSX right now that prevents creating additional accellerated surfaces.
-			if (MonoDevelop.Core.Platform.IsMac)
-				surface = new QuartzSurface (Cairo.Format.ARGB32, source.Width, source.Height);
-			else
-				surface = similar.Target.CreateSimilar (Cairo.Content.ColorAlpha, source.Width, source.Height);
+			if (Platform.IsMac) {
+				surface = new QuartzSurface (Format.ARGB32, source.Width, source.Height);
+			} else if (Platform.IsWindows) {
+				using (var t = similar.GetTarget ()) {
+					surface = t.CreateSimilar (Content.ColorAlpha, source.Width, source.Height);
+				}
+			} else {
+				surface = new ImageSurface (Format.ARGB32, source.Width, source.Height);
+			}
 
-			using (Cairo.Context context = new Cairo.Context (surface)) {
+			using (Context context = new Context (surface)) {
 				Gdk.CairoHelper.SetSourcePixbuf (context, source, 0, 0);
 				context.Paint ();
 			}
@@ -467,17 +654,83 @@ namespace MonoDevelop.Components
 			Height = source.Height;
 		}
 
-		~SurfaceWrapper ()
+		public void Dispose ()
 		{
-			Surface.Destroy ();
-			((IDisposable)Surface).Dispose ();
+			if (Surface != null) {
+				((IDisposable)Surface).Dispose ();
+			}
 		}
 	}
 
 	public class QuartzSurface : Cairo.Surface
 	{
+		const string CoreGraphics = "/System/Library/Frameworks/ApplicationServices.framework/Frameworks/CoreGraphics.framework/CoreGraphics";
+
 		[DllImport ("libcairo-2.dll", CallingConvention = CallingConvention.Cdecl)]
-		public static extern IntPtr cairo_quartz_surface_create(Cairo.Format format, uint width, uint height);
+		static extern IntPtr cairo_quartz_surface_create (Cairo.Format format, uint width, uint height);
+
+		[DllImport ("libcairo-2.dll", CallingConvention = CallingConvention.Cdecl)]
+		static extern IntPtr cairo_quartz_surface_get_cg_context (IntPtr surface);
+
+		[DllImport ("libcairo-2.dll", CallingConvention = CallingConvention.Cdecl)]
+		static extern IntPtr cairo_get_target (IntPtr context);
+
+		[DllImport (CoreGraphics, EntryPoint="CGContextConvertRectToDeviceSpace", CallingConvention = CallingConvention.Cdecl)]
+		static extern CGRect32 CGContextConvertRectToDeviceSpace32 (IntPtr contextRef, CGRect32 cgrect);
+
+		[DllImport (CoreGraphics, EntryPoint="CGContextConvertRectToDeviceSpace", CallingConvention = CallingConvention.Cdecl)]
+		static extern CGRect64 CGContextConvertRectToDeviceSpace64 (IntPtr contextRef, CGRect64 cgrect);
+
+		public static double GetRetinaScale (Cairo.Context context)  {
+			if (!Platform.IsMac)
+				return 1;
+
+			// Use C call to avoid dispose bug in cairo bindings for OSX
+			var cgContext = cairo_quartz_surface_get_cg_context (cairo_get_target (context.Handle));
+
+			if (IntPtr.Size == 8)
+				return CGContextConvertRectToDeviceSpace64 (cgContext, CGRect64.Unit).X;
+
+			return CGContextConvertRectToDeviceSpace32 (cgContext, CGRect32.Unit).X;
+		}
+
+		struct CGRect32
+		{
+			public CGRect32 (float x, float y, float width, float height)
+			{
+				this.X = x;
+				this.Y = y;
+				this.Width = width;
+				this.Height = height;
+			}
+
+			public float X, Y, Width, Height;
+
+			public static CGRect32 Unit {
+				get {
+					return new CGRect32 (1, 1, 1, 1);
+				}
+			}
+		}
+
+		struct CGRect64
+		{
+			public CGRect64 (double x, double y, double width, double height)
+			{
+				this.X = x;
+				this.Y = y;
+				this.Width = width;
+				this.Height = height;
+			}
+
+			public double X, Y, Width, Height;
+
+			public static CGRect64 Unit {
+				get {
+					return new CGRect64 (1, 1, 1, 1);
+				}
+			}
+		}
 
 		public QuartzSurface (Cairo.Format format, int width, int height)
 			: base (cairo_quartz_surface_create (format, (uint)width, (uint)height), true)

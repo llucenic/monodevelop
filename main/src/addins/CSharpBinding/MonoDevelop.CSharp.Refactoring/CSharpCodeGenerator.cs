@@ -42,11 +42,12 @@ using Mono.Cecil.Cil;
 using ICSharpCode.Decompiler;
 using ICSharpCode.Decompiler.Ast;
 using ICSharpCode.NRefactory.PatternMatching;
+using ICSharpCode.NRefactory.TypeSystem.Implementation;
 
 
 namespace MonoDevelop.CSharp.Refactoring
 {
-	public class CSharpCodeGenerator : CodeGenerator
+	class CSharpCodeGenerator : CodeGenerator
 	{
 		static CSharpAmbience ambience = new CSharpAmbience ();
 		
@@ -55,7 +56,7 @@ namespace MonoDevelop.CSharp.Refactoring
 		public MonoDevelop.CSharp.Formatting.CSharpFormattingPolicy Policy {
 			get {
 				if (policy == null) {
-					var types = MonoDevelop.Ide.DesktopService.GetMimeTypeInheritanceChain (CSharpFormatter.MimeType);
+					var types = MonoDevelop.Ide.DesktopService.GetMimeTypeInheritanceChain (MonoDevelop.CSharp.Formatting.CSharpFormatter.MimeType);
 					if (PolicyParent != null)
 						policy = PolicyParent.Get<CSharpFormattingPolicy> (types);
 					if (policy == null) {
@@ -73,7 +74,7 @@ namespace MonoDevelop.CSharp.Refactoring
 			}
 			set {
 				base.PolicyParent = value;
-				var types = MonoDevelop.Ide.DesktopService.GetMimeTypeInheritanceChain (CSharpFormatter.MimeType);
+				var types = MonoDevelop.Ide.DesktopService.GetMimeTypeInheritanceChain (MonoDevelop.CSharp.Formatting.CSharpFormatter.MimeType);
 				policy = value.Get<CSharpFormattingPolicy> (types);
 			}
 		}
@@ -84,6 +85,21 @@ namespace MonoDevelop.CSharp.Refactoring
 			public bool ExplicitDeclaration { get; set; }
 			public ITypeDefinition ImplementingType { get; set; }
 			public IUnresolvedTypeDefinition Part { get; set; }
+
+			public MonoDevelop.Ide.Gui.Document Document { get; set; }
+
+			public string GetShortType (string ns, string name, int typeArguments = 0)
+			{
+				if (Document == null || Document.ParsedDocument == null)
+					return ns + "." + name;
+				var typeDef = new GetClassTypeReference (ns, name, typeArguments).Resolve (Document.Compilation.TypeResolveContext);
+				if (typeDef == null)
+					return ns + "." + name;
+				var file = Document.ParsedDocument.ParsedFile as CSharpUnresolvedFile;
+				var csResolver = file.GetResolver (Document.Compilation, Document.Editor.Caret.Location);
+				var builder = new ICSharpCode.NRefactory.CSharp.Refactoring.TypeSystemAstBuilder (csResolver);
+				return OutputNode (Document, builder.ConvertType (typeDef));
+			}
 		}
 		
 		public override string WrapInRegions (string regionName, string text)
@@ -99,6 +115,35 @@ namespace MonoDevelop.CSharp.Refactoring
 			result.Append ("#endregion");
 			return result.ToString ();
 		}
+
+		void AppendObsoleteAttribute (StringBuilder result, CodeGenerationOptions options, IEntity entity)
+		{
+			string reason;
+			if (!entity.IsObsolete (out reason))
+				return;
+
+			var implementingType = options.Part;
+			var loc = implementingType.Region.End;
+			
+			var pf = implementingType.UnresolvedFile;
+			var file = pf as CSharpUnresolvedFile;
+
+			result.Append ("[");
+			var obsoleteRef = ReflectionHelper.ParseReflectionName ("System.ObsoleteAttribute");
+			var resolvedType = obsoleteRef.Resolve (options.ImplementingType.Compilation);
+			var shortType = resolvedType.Kind != TypeKind.Unknown ? CreateShortType (options.ImplementingType.Compilation, file, loc, resolvedType) : null;
+			var text = shortType != null ? shortType.ToString () : "System.Obsolete";
+			if (text.EndsWith ("Attribute", StringComparison.Ordinal))
+				text = text.Substring (0, text.Length - "Attribute".Length);
+			result.Append (text);
+			if (!string.IsNullOrEmpty (reason)) {
+				result.Append (" (\"");
+				result.Append (reason);
+				result.Append ("\")");
+			}
+			result.Append ("]");
+			result.AppendLine ();
+		}
 		
 		public override CodeGeneratorMemberResult CreateMemberImplementation (ITypeDefinition implementingType,
 		                                                                      IUnresolvedTypeDefinition part,
@@ -113,12 +158,9 @@ namespace MonoDevelop.CSharp.Refactoring
 			};
 			ITypeResolveContext ctx;
 
-			var doc = IdeApp.Workbench.GetDocument (implementingType.Region.FileName);
-			if (doc != null) {
-				ctx = doc.ParsedDocument.GetTypeResolveContext (doc.Compilation, implementingType.Region.Begin);
-			} else {
-				ctx = new CSharpTypeResolveContext (implementingType.Compilation.MainAssembly, null, implementingType, null);
-			}
+			var doc = IdeApp.Workbench.GetDocument (part.Region.FileName);
+			ctx = new CSharpTypeResolveContext (implementingType.Compilation.MainAssembly, null, implementingType, null);
+			options.Document = doc;
 
 			if (member is IUnresolvedMethod)
 				return GenerateCode ((IMethod) ((IUnresolvedMethod)member).CreateResolved (ctx), options);
@@ -140,7 +182,8 @@ namespace MonoDevelop.CSharp.Refactoring
 			var options = new CodeGenerationOptions () {
 				ExplicitDeclaration = explicitDeclaration,
 				ImplementingType = implementingType,
-				Part = part
+				Part = part,
+				Document = IdeApp.Workbench.GetDocument (part.Region.FileName)
 			};
 			if (member is IMethod)
 				return GenerateCode ((IMethod)member, options);
@@ -286,7 +329,7 @@ namespace MonoDevelop.CSharp.Refactoring
 		CodeGeneratorMemberResult GenerateCode (IEvent evt, CodeGenerationOptions options)
 		{
 			StringBuilder result = new StringBuilder ();
-			
+			AppendObsoleteAttribute (result, options, evt);
 			AppendModifiers (result, options, evt);
 			
 			result.Append ("event ");
@@ -328,9 +371,8 @@ namespace MonoDevelop.CSharp.Refactoring
 			AppendIndent (result);
 			bodyStartOffset = result.Length;
 			result.Append ("throw new ");
-			// TODO: Type system conversion.
-			result.Append ("System.NotImplementedException");
-//			AppendReturnType (result, options.ImplementingType, options.Ctx.GetTypeDefinition (typeof (System.NotImplementedException)));
+			result.Append (options.GetShortType ("System", "NotImplementedException"));
+			//			AppendReturnType (result, options.ImplementingType, options.Ctx.GetTypeDefinition (typeof (System.NotImplementedException)));
 			if (Policy.BeforeMethodCallParentheses)
 				result.Append (" ");
 			result.Append ("();");
@@ -338,11 +380,23 @@ namespace MonoDevelop.CSharp.Refactoring
 			AppendLine (result);
 		}
 		
-		void AppendMonoTouchTodo (StringBuilder result, out int bodyStartOffset, out int bodyEndOffset)
+		void AppendMonoTouchTodo (StringBuilder result, CodeGenerationOptions options, out int bodyStartOffset, out int bodyEndOffset)
 		{
 			AppendIndent (result);
 			bodyStartOffset = result.Length;
-			result.Append ("// TODO: Implement - see: http://go-mono.com/docs/index.aspx?link=T%3aMonoTouch.Foundation.ModelAttribute");
+			result.AppendLine ("// NOTE: Don't call the base implementation on a Model class");
+			
+			AppendIndent (result);
+			result.AppendLine ("// see http://docs.xamarin.com/guides/ios/application_fundamentals/delegates,_protocols,_and_events ");
+
+			AppendIndent (result);
+			result.Append ("throw new ");
+			result.Append (options.GetShortType ("System", "NotImplementedException"));
+
+			if (Policy.BeforeMethodCallParentheses)
+				result.Append (" ");
+			result.Append ("();");
+
 			bodyEndOffset = result.Length;
 			AppendLine (result);
 		}
@@ -351,7 +405,10 @@ namespace MonoDevelop.CSharp.Refactoring
 		{
 			int bodyStartOffset = -1, bodyEndOffset = -1;
 			StringBuilder result = new StringBuilder ();
+			AppendObsoleteAttribute (result, options, method);
 			AppendModifiers (result, options, method);
+			if (method.IsPartial)
+				result.Append ("partial ");
 			AppendReturnType (result, options, method.ReturnType);
 			result.Append (" ");
 			if (options.ExplicitDeclaration) {
@@ -461,7 +518,7 @@ namespace MonoDevelop.CSharp.Refactoring
 					bodyEndOffset = result.Length;
 					AppendLine (result);
 				} else if (IsMonoTouchModelMember (method)) {
-					AppendMonoTouchTodo (result, out bodyStartOffset, out bodyEndOffset);
+					AppendMonoTouchTodo (result, options, out bodyStartOffset, out bodyEndOffset);
 				} else if (method.IsAbstract || !(method.IsVirtual || method.IsOverride) || method.DeclaringTypeDefinition.Kind == TypeKind.Interface) {
 					AppendNotImplementedException (result, options, out bodyStartOffset, out bodyEndOffset);
 				} else {
@@ -567,7 +624,40 @@ namespace MonoDevelop.CSharp.Refactoring
 				AppendReturnType (result, options, p.Type);
 				result.Append (" ");
 				result.Append (CSharpAmbience.FilterName (p.Name));
+				if (p.ConstantValue != null) {
+					result.Append (" = ");
+					if (p.Type.Kind == TypeKind.Enum) {
+						bool found = false;
+						foreach (var literal in GetEnumLiterals(p.Type)) {
+							if (literal.ConstantValue.Equals (p.ConstantValue)) {
+								AppendReturnType (result, options, p.Type);
+								result.Append ("."+ literal.Name);
+								found = true;
+								break;
+							}
+						}
+						if (!found) {
+							result.Append ("(");
+							AppendReturnType (result, options, p.Type);
+							result.Append (")" + p.ConstantValue); 
+						}
+					} else if (p.ConstantValue is char) {
+						result.Append ("'" + p.ConstantValue + "'");
+					} else if (p.ConstantValue is string)  {
+						result.Append ("\"" + CSharpTextEditorIndentation.ConvertToStringLiteral ((string)p.ConstantValue) + "\"");
+					} else {
+						result.Append (p.ConstantValue);
+					}
+				} 
 			}
+		}
+
+		public IEnumerable<IField> GetEnumLiterals(IType type)
+		{
+			if (type.Kind != TypeKind.Enum)
+				throw new ArgumentException ("Type is no enum.");
+			foreach (var field in type.GetFields (f => f.IsConst && f.IsPublic))
+				yield return field;
 		}
 		
 		static string GetModifiers (ITypeDefinition implementingType, IUnresolvedTypeDefinition implementingPart, IMember member)
@@ -606,7 +696,6 @@ namespace MonoDevelop.CSharp.Refactoring
 			if (options.ExplicitDeclaration || options.ImplementingType.Kind == TypeKind.Interface)
 				return;
 			result.Append (GetModifiers (options.ImplementingType, options.Part, member));
-			
 			bool isFromInterface = false;
 			if (member.DeclaringType != null && member.DeclaringTypeDefinition.Kind == TypeKind.Interface) {
 				isFromInterface = true;
@@ -615,22 +704,25 @@ namespace MonoDevelop.CSharp.Refactoring
 //					foreach (var type in options.ImplementingType.BaseTypes) {
 //						if (type.Kind == TypeKind.Interface)
 //							continue;
-//						if (type.Members.Any (m => m.Name == member.Name && member.EntityType == m.EntityType /* && DomMethod.ParameterListEquals (member.Parameters, m.Parameters)*/ )) {
+//						if (type.Members.Any (m => m.Name == member.Name && member.SymbolKind == m.SymbolKind /* && DomMethod.ParameterListEquals (member.Parameters, m.Parameters)*/ )) {
 //							isFromInterface = false;
 //							break;
 //						}
 //					}
 //				}
 			}
-			
+
 			if (!isFromInterface && member.IsOverridable)
 				result.Append ("override ");
+			if (member is IMethod && ((IMethod)member).IsAsync)
+				result.Append ("async ");
 		}
 		
 		CodeGeneratorMemberResult GenerateCode (IProperty property, CodeGenerationOptions options)
 		{
 			var regions = new List<CodeGeneratorBodyRegion> ();
 			var result = new StringBuilder ();
+			AppendObsoleteAttribute (result, options, property);
 			AppendModifiers (result, options, property);
 			AppendReturnType (result, options, property.ReturnType);
 			result.Append (" ");
@@ -655,13 +747,13 @@ namespace MonoDevelop.CSharp.Refactoring
 				} else {
 					AppendBraceStart (result, Policy.PropertyGetBraceStyle);
 					if (IsMonoTouchModelMember (property)) {
-						AppendMonoTouchTodo (result, out bodyStartOffset, out bodyEndOffset);
+						AppendMonoTouchTodo (result, options, out bodyStartOffset, out bodyEndOffset);
 					} else if (property.IsAbstract || property.DeclaringTypeDefinition.Kind == TypeKind.Interface) {
 						AppendNotImplementedException (result, options, out bodyStartOffset, out bodyEndOffset);
 					} else {
 						AppendIndent (result);
 						bodyStartOffset = result.Length;
-						if (property.EntityType == EntityType.Indexer) {
+						if (property.SymbolKind == SymbolKind.Indexer) {
 							result.Append ("return base[");
 							if (property.Parameters.Count > 0)
 								result.Append (CSharpAmbience.FilterName (property.Parameters.First ().Name));
@@ -689,13 +781,13 @@ namespace MonoDevelop.CSharp.Refactoring
 				} else {
 					AppendBraceStart (result, Policy.PropertyGetBraceStyle);
 					if (IsMonoTouchModelMember (property)) {
-						AppendMonoTouchTodo (result, out bodyStartOffset, out bodyEndOffset);
+						AppendMonoTouchTodo (result, options, out bodyStartOffset, out bodyEndOffset);
 					} else if (property.IsAbstract || property.DeclaringTypeDefinition.Kind == TypeKind.Interface) {
 						AppendNotImplementedException (result, options, out bodyStartOffset, out bodyEndOffset);
 					} else {
 						AppendIndent (result);
 						bodyStartOffset = result.Length;
-						if (property.EntityType == EntityType.Indexer) {
+						if (property.SymbolKind == SymbolKind.Indexer) {
 							result.Append ("base[");
 							if (property.Parameters.Count > 0)
 								result.Append (CSharpAmbience.FilterName (property.Parameters.First ().Name));
@@ -740,7 +832,7 @@ namespace MonoDevelop.CSharp.Refactoring
 				ImplementingType = field.DeclaringTypeDefinition,
 				Part = implementingType
 			};
-			
+			result.Append ("public ");
 			AppendReturnType (result, options, field.ReturnType);
 			result.Append (" ");
 			result.Append (propertyName);
@@ -785,6 +877,12 @@ namespace MonoDevelop.CSharp.Refactoring
 		}
 		
 		static bool InsertUsingAfter (AstNode node)
+		{
+			return node is NewLineNode && IsCommentOrUsing (node.GetNextSibling (s => !(s is NewLineNode))) ||
+				IsCommentOrUsing (node);
+		}
+
+		static bool IsCommentOrUsing (AstNode node)
 		{
 			return node is ICSharpCode.NRefactory.CSharp.Comment ||
 				node is UsingDeclaration ||

@@ -27,6 +27,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Diagnostics;
 using System.Text.RegularExpressions;
 using System.Text;
@@ -38,6 +39,7 @@ using MonoDevelop.Core.Assemblies;
 using MonoDevelop.CSharp.Project;
 using System.Threading;
 using MonoDevelop.Ide;
+using MonoDevelop.Core.ProgressMonitoring;
 
 
 namespace MonoDevelop.CSharp
@@ -121,8 +123,14 @@ namespace MonoDevelop.CSharp
 			sb.AppendLine ();
 			
 			foreach (ProjectReference lib in projectItems.GetAll <ProjectReference> ()) {
-				if (lib.ReferenceType == ReferenceType.Project && !(lib.OwnerProject.ParentSolution.FindProjectByName (lib.Reference) is DotNetProject))
-					continue;
+				if (lib.ReferenceType == ReferenceType.Project) {
+					var ownerProject = lib.OwnerProject;
+					if (ownerProject != null) {
+						var parentSolution = ownerProject.ParentSolution;
+						if (parentSolution != null && !(parentSolution.FindProjectByName (lib.Reference) is DotNetProject))
+							continue;
+					}
+				} 
 				string refPrefix = string.IsNullOrEmpty (lib.Aliases) ? "" : lib.Aliases + "=";
 				foreach (string fileName in lib.GetReferencedFileNames (configSelector)) {
 					switch (lib.ReferenceType) {
@@ -158,12 +166,19 @@ namespace MonoDevelop.CSharp
 					}
 				}
 			}
-			
+
+			if (alreadyAddedReference.Any (reference => SystemAssemblyService.ContainsReferenceToSystemRuntime (reference))) {
+				LoggingService.LogInfo ("Found PCLv2 assembly.");
+				var facades = runtime.FindFacadeAssembliesForPCL (project.TargetFramework);
+				foreach (var facade in facades)
+					AppendQuoted (sb, "/r:", facade);
+			}
+
 			string sysCore = project.AssemblyContext.GetAssemblyFullName ("System.Core", project.TargetFramework);
-			if (sysCore != null) {
-				sysCore = project.AssemblyContext.GetAssemblyLocation (sysCore, project.TargetFramework);
-				if (sysCore != null && !alreadyAddedReference.Contains (sysCore))
-					AppendQuoted (sb, "/r:", sysCore);
+			if (sysCore != null && !alreadyAddedReference.Contains (sysCore)) {
+				var asm = project.AssemblyContext.GetAssemblyFromFullName (sysCore, null, project.TargetFramework);
+				if (asm != null)
+					AppendQuoted (sb, "/r:", asm.Location);
 			}
 			
 			sb.AppendLine ("/nologo");
@@ -173,27 +188,31 @@ namespace MonoDevelop.CSharp
 			if (configuration.SignAssembly) {
 				if (File.Exists (configuration.AssemblyKeyFile))
 					AppendQuoted (sb, "/keyfile:", configuration.AssemblyKeyFile);
+				if (configuration.DelaySign)
+					sb.AppendLine ("/delaySign");
 			}
-			
-			if (configuration.DebugMode) {
-//				sb.AppendLine ("/debug:+");
-				sb.AppendLine ("/debug:full");
+
+			var debugType = compilerParameters.DebugType;
+			if (string.IsNullOrEmpty (debugType)) {
+				debugType = configuration.DebugMode ? "full" : "none";
+			} else if (string.Equals (debugType, "pdbonly", StringComparison.OrdinalIgnoreCase)) {
+				//old Mono compilers don't support pdbonly
+				if (monoRuntime != null && !monoRuntime.HasMultitargetingMcs)
+					debugType = "full";
 			}
-			
-			switch (compilerParameters.LangVersion) {
-			case LangVersion.Default:
-				break;
-			case LangVersion.ISO_1:
-				sb.AppendLine ("/langversion:ISO-1");
-				break;
-			case LangVersion.ISO_2:
-				sb.AppendLine ("/langversion:ISO-2");
-				break;
-			default:
-				string message = "Invalid LangVersion enum value '" + compilerParameters.LangVersion.ToString () + "'";
-				monitor.ReportError (message, null);
-				LoggingService.LogError (message);
-				return null;
+			if (!string.Equals (debugType, "none", StringComparison.OrdinalIgnoreCase)) {
+					sb.AppendLine ("/debug:" + debugType);
+			}
+
+			if (compilerParameters.LangVersion != LangVersion.Default) {
+				var langVersionString = CSharpCompilerParameters.TryLangVersionToString (compilerParameters.LangVersion);
+				if (langVersionString == null) {
+					string message = "Invalid LangVersion enum value '" + compilerParameters.LangVersion.ToString () + "'";
+					monitor.ReportError (message, null);
+					LoggingService.LogError (message);
+					return null;
+				}
+				sb.AppendLine ("/langversion:" + langVersionString);
 			}
 			
 			// mcs default is + but others might not be
@@ -330,7 +349,7 @@ namespace MonoDevelop.CSharp
 			ExecutionEnvironment envVars = runtime.GetToolsExecutionEnvironment (project.TargetFramework);
 			string cargs = "/noconfig @\"" + responseFileName + "\"";
 
-			int exitCode = DoCompilation (compilerName, cargs, workingDir, envVars, gacRoots, ref output, ref error);
+			int exitCode = DoCompilation (monitor, compilerName, cargs, workingDir, envVars, gacRoots, ref output, ref error);
 			
 			BuildResult result = ParseOutput (output, error);
 			if (result.CompilerOutput.Trim ().Length != 0)
@@ -412,10 +431,10 @@ namespace MonoDevelop.CSharp
 			return result;
 		}
 		
-		static int DoCompilation (string compilerName, string compilerArgs, string working_dir, ExecutionEnvironment envVars, List<string> gacRoots, ref string output, ref string error) 
+		static int DoCompilation (IProgressMonitor monitor, string compilerName, string compilerArgs, string working_dir, ExecutionEnvironment envVars, List<string> gacRoots, ref string output, ref string error)
 		{
-			output = Path.GetTempFileName();
-			error = Path.GetTempFileName();
+			output = Path.GetTempFileName ();
+			error = Path.GetTempFileName ();
 			
 			StreamWriter outwr = new StreamWriter (output);
 			StreamWriter errwr = new StreamWriter (error);
@@ -439,12 +458,14 @@ namespace MonoDevelop.CSharp
 			pinfo.UseShellExecute = false;
 			pinfo.RedirectStandardOutput = true;
 			pinfo.RedirectStandardError = true;
-			
+
 			MonoDevelop.Core.Execution.ProcessWrapper pw = Runtime.ProcessService.StartProcess (pinfo, outwr, errwr, null);
-			pw.WaitForOutput();
+			using (var mon = new AggregatedOperationMonitor (monitor, pw)) {
+				pw.WaitForOutput ();
+			}
 			int exitCode = pw.ExitCode;
-			outwr.Close();
-			errwr.Close();
+			outwr.Close ();
+			errwr.Close ();
 			pw.Dispose ();
 			return exitCode;
 		}

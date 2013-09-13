@@ -82,7 +82,7 @@ namespace Mono.TextEditor
 			int startLineNr, endLineNr;
 			GetSelectedLines (data, out startLineNr, out endLineNr);
 			
-			using (var undo = data.OpenUndoGroup ()) {
+			using (var undo = data.OpenUndoGroup (OperationType.Format)) {
 				var anchor = data.MainSelection.Anchor;
 				var lead = data.MainSelection.Lead;
 				bool first = true;
@@ -163,7 +163,7 @@ namespace Mono.TextEditor
 			var anchor = data.MainSelection.Anchor;
 			var lead = data.MainSelection.Lead;
 			var indentationString = data.Options.IndentationString;
-			using (var undo = data.OpenUndoGroup ()) {
+			using (var undo = data.OpenUndoGroup (OperationType.Format)) {
 				foreach (DocumentLine line in data.SelectedLines) {
 					if (data.Options.IndentStyle == IndentStyle.Virtual && line.Length == 0)
 						continue;
@@ -233,7 +233,8 @@ namespace Mono.TextEditor
 			using (var undo = data.OpenUndoGroup ()) {
 				data.EnsureCaretIsNotVirtual ();
 				data.InsertAtCaret (data.EolMarker);
-				data.InsertAtCaret (data.GetIndentationString (data.Caret.Location));
+				var line = data.Document.GetLine (data.Caret.Line);
+				data.InsertAtCaret (data.GetIndentationString (line.EndOffset));
 			}
 		}
 		
@@ -243,8 +244,14 @@ namespace Mono.TextEditor
 				return;
 			
 			using (var undo = data.OpenUndoGroup ()) {
-				if (data.IsSomethingSelected)
+				if (data.IsSomethingSelected) {
+					var end = data.MainSelection.End;
 					data.DeleteSelectedText ();
+					if (end.Column == 1) {
+						CaretMoveActions.InternalCaretMoveHome (data, true, false);
+						return;
+					}
+				}
 				switch (data.Options.IndentStyle) {
 				case IndentStyle.None:
 					data.InsertAtCaret (data.EolMarker);
@@ -295,7 +302,10 @@ namespace Mono.TextEditor
 				return;
 			if (CancelPreEditMode (data))
 				return;
+			var offset = data.Document.UndoBeginOffset;
 			data.Document.Undo ();
+			if (offset >= 0)
+				data.ScrollTo (offset);
 		}
 		
 		public static bool CancelPreEditMode (TextEditorData data)
@@ -314,7 +324,10 @@ namespace Mono.TextEditor
 				return;
 			if (CancelPreEditMode (data))
 				return;
+			var offset = data.Document.RedoBeginOffset;
 			data.Document.Redo ();
+			if (offset >= 0)
+				data.ScrollTo (offset);
 		}
 		
 		public static void MoveBlockUp (TextEditorData data)
@@ -340,7 +353,7 @@ namespace Mono.TextEditor
 				
 				Mono.TextEditor.DocumentLine prevLine = data.Document.GetLine (lineStart - 1);
 				string text = data.Document.GetTextAt (prevLine.Offset, prevLine.Length);
-				List<TextMarker> prevLineMarkers = new List<TextMarker> (prevLine.Markers);
+				List<TextLineMarker> prevLineMarkers = new List<TextLineMarker> (prevLine.Markers);
 				prevLine.ClearMarker ();
 				var loc = data.Caret.Location;
 				for (int i = lineStart - 1; i <= lineEnd; i++) {
@@ -348,7 +361,7 @@ namespace Mono.TextEditor
 					DocumentLine next = data.Document.GetLine (i + 1);
 					data.Replace (cur.Offset, cur.Length, i != lineEnd ? data.Document.GetTextAt (next.Offset, next.Length) : text);
 					data.Document.GetLine (i).ClearMarker ();
-					foreach (TextMarker marker in (i != lineEnd ? data.Document.GetLine (i + 1).Markers : prevLineMarkers)) {
+					foreach (TextLineMarker marker in (i != lineEnd ? data.Document.GetLine (i + 1).Markers : prevLineMarkers)) {
 						data.Document.GetLine (i).AddMarker (marker);
 					}
 				}
@@ -384,7 +397,7 @@ namespace Mono.TextEditor
 				if (nextLine == null)
 					return;
 				string text = data.Document.GetTextAt (nextLine.Offset, nextLine.Length);
-				List<TextMarker> prevLineMarkers = new List<TextMarker> (nextLine.Markers);
+				List<TextLineMarker> prevLineMarkers = new List<TextLineMarker> (nextLine.Markers);
 				nextLine.ClearMarker ();
 				var loc = data.Caret.Location;
 				for (int i = lineEnd + 1; i >= lineStart; i--) {
@@ -392,7 +405,7 @@ namespace Mono.TextEditor
 					DocumentLine prev = data.Document.GetLine (i - 1);
 					data.Replace (cur.Offset, cur.Length, i != lineStart ? data.Document.GetTextAt (prev.Offset, prev.Length) : text);
 					data.Document.GetLine (i).ClearMarker ();
-					foreach (TextMarker marker in (i != lineStart ? data.Document.GetLine (i - 1).Markers : prevLineMarkers)) {
+					foreach (TextLineMarker marker in (i != lineStart ? data.Document.GetLine (i - 1).Markers : prevLineMarkers)) {
 						data.Document.GetLine (i).AddMarker (marker);
 					}
 				}
@@ -468,10 +481,17 @@ namespace Mono.TextEditor
 
 		public static void DuplicateLine (TextEditorData data)
 		{
-			DocumentLine line = data.Document.GetLine (data.Caret.Line);
-			if (line == null)
-				return;
-			data.Insert (line.Offset, data.GetTextAt (line.SegmentIncludingDelimiter));
+			if (data.IsSomethingSelected) {
+				var selectedText = data.SelectedText;
+				data.ClearSelection ();
+				data.InsertAtCaret (selectedText);
+			}
+			else {
+				DocumentLine line = data.Document.GetLine (data.Caret.Line);
+				if (line == null)
+					return;
+				data.Insert (line.Offset, data.GetTextAt (line.SegmentIncludingDelimiter));
+			}
 		}
 	}
 }

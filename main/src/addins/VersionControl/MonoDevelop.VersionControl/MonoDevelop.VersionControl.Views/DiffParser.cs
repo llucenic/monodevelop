@@ -28,7 +28,6 @@ using System;
 using System.IO;
 using System.Text.RegularExpressions;
 
-using MonoDevelop.Core;
 using MonoDevelop.Ide.TypeSystem;
 using ICSharpCode.NRefactory.TypeSystem;
 using ICSharpCode.NRefactory.TypeSystem.Implementation;
@@ -39,7 +38,7 @@ namespace MonoDevelop.VersionControl.Views
 	/// <summary>
 	/// Parser for unified diffs
 	/// </summary>
-	public class DiffParser : AbstractTypeSystemParser
+	public class DiffParser : TypeSystemParser
 	{
 		// Match the original file and time/revstamp line, capturing the filepath and the stamp
 		static Regex fileHeaderExpression = new Regex (@"^---\s+(?<filepath>[^\t]+)\t(?<stamp>.*)$", RegexOptions.Compiled);

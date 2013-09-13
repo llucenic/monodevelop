@@ -24,8 +24,6 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using System;
-using MonoDevelop.Ide;
 using MonoDevelop.Ide.Gui;
 using MonoDevelop.VersionControl.Views;
 
@@ -33,7 +31,7 @@ namespace MonoDevelop.VersionControl
 {
 	public class DefaultLogViewHandler : ILogViewHandler
 	{
-		public bool CanHandle (VersionControlItem item, IViewContent primaryView)
+		public bool CanHandle (VersionControlItem item, DocumentView primaryView)
 		{
 			return true;
 		}

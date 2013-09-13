@@ -28,12 +28,11 @@ using Gtk;
 using System.Collections.Generic;
 using ICSharpCode.NRefactory.CSharp;
 using MonoDevelop.Core;
-using MonoDevelop.Refactoring;
 using ICSharpCode.NRefactory.TypeSystem;
 
 namespace MonoDevelop.CodeGeneration
 {
-	public class CreateConstructorGenerator : ICodeGenerator
+	class CreateConstructorGenerator : ICodeGenerator
 	{
 		public string Icon {
 			get {
@@ -55,13 +54,13 @@ namespace MonoDevelop.CodeGeneration
 		
 		public bool IsValid (CodeGenerationOptions options)
 		{
-			CreateConstructor createConstructor = new CreateConstructor (options);
+			var createConstructor = new CreateConstructor (options);
 			return createConstructor.IsValid ();
 		}
 		
-		public IGenerateAction InitalizeSelection (CodeGenerationOptions options, Gtk.TreeView treeView)
+		public IGenerateAction InitalizeSelection (CodeGenerationOptions options, TreeView treeView)
 		{
-			CreateConstructor createConstructor = new CreateConstructor (options);
+			var createConstructor = new CreateConstructor (options);
 			createConstructor.Initialize (treeView);
 			return createConstructor;
 		}
@@ -100,9 +99,9 @@ namespace MonoDevelop.CodeGeneration
 			
 			protected override IEnumerable<string> GenerateCode (List<object> includedMembers)
 			{
-				var constructorDeclaration = new ConstructorDeclaration () {
+				var constructorDeclaration = new ConstructorDeclaration {
 					Name = Options.EnclosingType.Name,
-					Modifiers = ICSharpCode.NRefactory.CSharp.Modifiers.Public,
+					Modifiers = Modifiers.Public,
 					Body = new BlockStatement ()
 				};
 				
@@ -114,7 +113,7 @@ namespace MonoDevelop.CodeGeneration
 					constructorDeclaration.Body.Statements.Add (new ExpressionStatement (assign));
 				}
 				
-				yield return constructorDeclaration.GetText (Options.FormattingOptions);
+				yield return constructorDeclaration.ToString (Options.FormattingOptions);
 			}
 		}
 	}

@@ -267,9 +267,9 @@ namespace MonoDevelop.Projects
 			}
 		}
 		
-		internal void InternalWriteSolutionItem (IProgressMonitor monitor, string file, SolutionEntityItem item)
+		internal void InternalWriteSolutionItem (IProgressMonitor monitor, FilePath file, SolutionEntityItem item)
 		{
-			string newFile = WriteFile (monitor, file, item, null);
+			var newFile = WriteFile (monitor, file, item, null);
 			if (newFile != null)
 				item.FileName = newFile;
 			else
@@ -290,9 +290,9 @@ namespace MonoDevelop.Projects
 			return item;
 		}
 		
-		internal void InternalWriteWorkspaceItem (IProgressMonitor monitor, string file, WorkspaceItem item)
+		internal void InternalWriteWorkspaceItem (IProgressMonitor monitor, FilePath file, WorkspaceItem item)
 		{
-			string newFile = WriteFile (monitor, file, item, item.FileFormat);
+			var newFile = WriteFile (monitor, file, item, item.FileFormat);
 			if (newFile != null)
 				item.FileName = newFile;
 			else
@@ -314,7 +314,7 @@ namespace MonoDevelop.Projects
 			return obj;
 		}
 		
-		string WriteFile (IProgressMonitor monitor, string file, object item, FileFormat format)
+		FilePath WriteFile (IProgressMonitor monitor, FilePath file, object item, FileFormat format)
 		{
 			if (format == null) {
 				if (defaultFormat.CanWrite (item))
@@ -326,12 +326,12 @@ namespace MonoDevelop.Projects
 				
 				if (format == null)
 					return null;
+
 				file = format.GetValidFileName (item, file);
 			}
 			
-			if (!FileService.RequestFileEdit (file))
-				throw new UserException (GettextCatalog.GetString ("The project could not be saved"), GettextCatalog.GetString ("Write permission has not been granted for file '{0}'", file));
-			
+			FileService.RequestFileEdit (file);
+
 			format.Format.WriteFile (file, item, monitor);
 			return file;
 		}
@@ -644,6 +644,7 @@ namespace MonoDevelop.Projects
 		
 		public override void Save (IProgressMonitor monitor, SolutionEntityItem entry)
 		{
+			FileService.RequestFileEdit (entry.GetItemFiles (false));
 			entry.OnSave (monitor);
 		}
 		
@@ -731,6 +732,17 @@ namespace MonoDevelop.Projects
 				throw new InvalidOperationException ("Unknown item type: " + item);
 		}
 		
+		public override IEnumerable<ExecutionTarget> GetExecutionTargets (IBuildTarget item, ConfigurationSelector configuration)
+		{
+			if (item is WorkspaceItem) {
+				return ((WorkspaceItem)item).OnGetExecutionTargets (configuration);
+			}
+			else if (item is SolutionItem)
+				return ((SolutionItem)item).OnGetExecutionTargets (configuration);
+			else
+				throw new InvalidOperationException ("Unknown item type: " + item);
+		}
+
 		public override bool GetNeedsBuilding (IBuildTarget item, ConfigurationSelector configuration)
 		{
 			if (item is SolutionItem) {
@@ -777,6 +789,11 @@ namespace MonoDevelop.Projects
 		{
 			return callback (monitor, item, buildData);
 		}
+
+		public override IEnumerable<string> GetReferencedAssemblies (DotNetProject project, ConfigurationSelector configuration, bool includeProjectReferences)
+		{
+			return project.OnGetReferencedAssemblies (configuration, includeProjectReferences);
+		}
 	}	
 	
 	internal static class Counters
@@ -793,16 +810,6 @@ namespace MonoDevelop.Projects
 		public static TimerCounter BuildProjectTimer = InstrumentationService.CreateTimerCounter ("Project built", "Project Model");
 		public static TimerCounter BuildWorkspaceItemTimer = InstrumentationService.CreateTimerCounter ("Workspace item built", "Project Model");
 		public static TimerCounter NeedsBuildingTimer = InstrumentationService.CreateTimerCounter ("Needs building checked", "Project Model");
-		
-		public static Counter TypeIndexEntries = InstrumentationService.CreateCounter ("Type index entries", "Parser Service");
-		public static Counter LiveTypeObjects = InstrumentationService.CreateCounter ("Live type objects", "Parser Service");
-		public static Counter LiveDatabases = InstrumentationService.CreateCounter ("Parser databases", "Parser Service");
-		public static Counter LiveAssemblyDatabases = InstrumentationService.CreateCounter ("Assembly databases", "Parser Service");
-		public static Counter LiveProjectDatabases = InstrumentationService.CreateCounter ("Project databases", "Parser Service");
-		public static TimerCounter DatabasesRead = InstrumentationService.CreateTimerCounter ("Parser database read", "Parser Service");
-		public static TimerCounter DatabasesWritten = InstrumentationService.CreateTimerCounter ("Parser database written", "Parser Service");
-		public static TimerCounter FileParse = InstrumentationService.CreateTimerCounter ("File parsed", "Parser Service");
-		public static TimerCounter AssemblyParseTime = InstrumentationService.CreateTimerCounter ("Assembly parsed", "Parser Service");
 		
 		public static TimerCounter HelpServiceInitialization = InstrumentationService.CreateTimerCounter ("Help Service initialization", "IDE");
 		public static TimerCounter ParserServiceInitialization = InstrumentationService.CreateTimerCounter ("Parser Service initialization", "IDE");

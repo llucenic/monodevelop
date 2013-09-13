@@ -73,6 +73,12 @@ namespace MonoDevelop.Core
 				return new FilePath (!string.IsNullOrEmpty (fileName) ? Path.GetFullPath (fileName) : "");
 			}
 		}
+
+		public bool IsDirectory {
+			get {
+				return File.GetAttributes (FullPath).HasFlag(FileAttributes.Directory);
+			}
+		}
 		
 		/// <summary>
 		/// Returns a path in standard form, which can be used to be compared
@@ -84,10 +90,11 @@ namespace MonoDevelop.Core
 				if (string.IsNullOrEmpty (fileName))
 					return FilePath.Empty;
 				string fp = Path.GetFullPath (fileName);
-				if (fp.Length > 0 && fp[fp.Length - 1] == Path.DirectorySeparatorChar)
+				if (fp.Length > 0 && fp [fp.Length - 1] == Path.DirectorySeparatorChar)
 					return fp.TrimEnd (Path.DirectorySeparatorChar);
-				else
-					return fp;
+				if (fp.Length > 0 && fp [fp.Length - 1] == Path.AltDirectorySeparatorChar)
+					return fp.TrimEnd (Path.AltDirectorySeparatorChar);
+				return fp;
 			}
 		}
 

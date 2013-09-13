@@ -30,14 +30,16 @@ using MonoDevelop.Core;
 using System.Linq;
 using System.Text;
 using MonoDevelop.Refactoring;
+using System.Collections.Generic;
+using GLib;
 
 namespace MonoDevelop.CodeActions
 {
-	public class CodeActionPanel : OptionsPanel
+	class CodeActionPanel : OptionsPanel
 	{
 		ContextActionPanelWidget widget;
 		
-		public override Gtk.Widget CreatePanelWidget ()
+		public override Widget CreatePanelWidget ()
 		{
 			return widget = new ContextActionPanelWidget ("text/x-csharp");
 		}
@@ -48,17 +50,44 @@ namespace MonoDevelop.CodeActions
 		}
 	}
 
-	public partial class ContextActionPanelWidget : Gtk.Bin
+	partial class ContextActionPanelWidget : Bin
 	{
-		string mimeType;
+		readonly string mimeType;
 		
-		Gtk.TreeStore treeStore = new Gtk.TreeStore (typeof(string), typeof(bool), typeof(CodeActionProvider));
-		
+		readonly TreeStore treeStore = new TreeStore (typeof(string), typeof(bool), typeof(CodeActionProvider));
+		readonly Dictionary<CodeActionProvider, bool> providerStates = new Dictionary<CodeActionProvider, bool> ();
+
+		void GetAllProviderStates ()
+		{
+			string disabledNodes = PropertyService.Get ("ContextActions." + mimeType, "");
+			foreach (var node in RefactoringService.ContextAddinNodes.Where (n => n.MimeType == mimeType)) {
+				providerStates [node] = disabledNodes.IndexOf (node.IdString, StringComparison.Ordinal) < 0;
+			}
+		}
+
 		public ContextActionPanelWidget (string mimeType)
 		{
 			this.mimeType = mimeType;
+			// ReSharper disable once DoNotCallOverridableMethodsInConstructor
 			this.Build ();
-			
+
+			// lock description label to allocated width so it can wrap
+			labelDescription.Wrap = true;
+			labelDescription.WidthRequest = 100;
+			labelDescription.SizeAllocated += (o, args) => {
+				if (labelDescription.WidthRequest != args.Allocation.Width)
+					labelDescription.WidthRequest = args.Allocation.Width;
+			};
+
+			// ensure selected row remains visible
+			treeviewContextActions.SizeAllocated += (o, args) => {
+				TreeIter iter;
+				if (treeviewContextActions.Selection.GetSelected (out iter)) {
+					var path = treeviewContextActions.Model.GetPath (iter);
+					treeviewContextActions.ScrollToCell (path, treeviewContextActions.Columns[0], false, 0f, 0f);
+				}
+			};
+
 			var col = new TreeViewColumn ();
 			
 			searchentryFilter.Ready = true;
@@ -70,20 +99,23 @@ namespace MonoDevelop.CodeActions
 				TreeIter iter;
 				if (!treeStore.GetIterFromString (out iter, args.Path)) 
 					return;
-				bool enabled = (bool)treeStore.GetValue (iter, 1);
-				treeStore.SetValue (iter, 1, !enabled);
+				var provider = (CodeActionProvider)treeStore.GetValue (iter, 2);
+				providerStates [provider] = !providerStates [provider];
+				treeStore.SetValue (iter, 1, providerStates [provider]);
 			};
 			col.PackStart (togRender, false);
 			col.AddAttribute (togRender, "active", 1);
 			
-			var textRender = new CellRendererText ();
+			var textRender = new CellRendererText {
+				Ellipsize = Pango.EllipsizeMode.End
+			};
 			col.PackStart (textRender, true);
 			col.AddAttribute (textRender, "markup", 0);
 			
 			treeviewContextActions.AppendColumn (col);
 			treeviewContextActions.HeadersVisible = false;
 			treeviewContextActions.Model = treeStore;
-			
+			GetAllProviderStates ();
 			FillTreeStore (null);
 			treeviewContextActions.Selection.Changed += HandleTreeviewContextActionsSelectionChanged;
 		}
@@ -92,52 +124,45 @@ namespace MonoDevelop.CodeActions
 		{
 			FillTreeStore (searchentryFilter.Entry.Text.Trim ());
 		}
-
-		void HandleTreeviewContextActionsSelectionChanged (object sender, EventArgs e)
-		{
-			this.labelDescription.Text = "";
-			Gtk.TreeIter iter;
-			if (!treeviewContextActions.Selection.GetSelected (out iter))
-				return;
-			var actionNode = (CodeActionProvider)treeStore.GetValue (iter, 2);
-			this.labelDescription.Markup = "<b>" + actionNode.Title + "</b>" + Environment.NewLine + actionNode.Description;
-		}
-
+	
 		public void FillTreeStore (string filter)
 		{
 			treeStore.Clear ();
-			string disabledNodes = PropertyService.Get ("ContextActions." + mimeType, "");
-			foreach (var node in RefactoringService.ContextAddinNodes.Where (n => n.MimeType == mimeType)) {
-				if (!string.IsNullOrEmpty (filter) && node.Title.IndexOf (filter, StringComparison.OrdinalIgnoreCase) < 0)
-					continue;
-				
-				bool isEnabled = disabledNodes.IndexOf (node.IdString) < 0;
+			var sortedAndFiltered = providerStates.Keys
+				.Where (node => string.IsNullOrEmpty (filter) || node.Title.IndexOf (filter, StringComparison.OrdinalIgnoreCase) > 0)
+				.OrderBy (n => n.Title, StringComparer.Ordinal);
+			foreach (var node in sortedAndFiltered) {
 				var title = node.Title;
-				if (!string.IsNullOrEmpty (filter)) {
-					var idx = title.IndexOf (filter, StringComparison.OrdinalIgnoreCase);
-					title = title.Substring (0, idx) + "<span bgcolor=\"yellow\">" + title.Substring (idx, filter.Length) + "</span>" + title.Substring (idx + filter.Length);
-				}
-				
-				treeStore.AppendValues (title, isEnabled, node);
+				MonoDevelop.CodeIssues.CodeIssuePanelWidget.MarkupSearchResult (filter, ref title);
+				treeStore.AppendValues (title, providerStates [node], node);
 			}
 		}
-		
+
+		void HandleTreeviewContextActionsSelectionChanged (object sender, EventArgs e)
+		{
+			labelDescription.Visible = false;
+			TreeIter iter;
+			if (!treeviewContextActions.Selection.GetSelected (out iter))
+				return;
+			var actionNode = (CodeActionProvider)treeStore.GetValue (iter, 2);
+			labelDescription.Visible = true;
+			labelDescription.Markup = string.Format (
+				"<b>{0}</b>\n{1}",
+				Markup.EscapeText (actionNode.Title),
+				Markup.EscapeText (actionNode.Description)
+				);
+		}
+
 		public void ApplyChanges ()
 		{
 			var sb = new StringBuilder ();
-			Gtk.TreeIter iter;
-			if (!treeStore.GetIterFirst (out iter))
-				return;
-			do {
-				bool enabled = (bool)treeStore.GetValue (iter, 1);
-				var node = (CodeActionProvider)treeStore.GetValue (iter, 2);
-				
-				if (!enabled) {
-					if (sb.Length > 0)
-						sb.Append (",");
-					sb.Append (node.IdString);
-				}
-			} while (treeStore.IterNext (ref iter));
+			foreach (var kv in providerStates) {
+				if (kv.Value)
+					continue;
+				if (sb.Length > 0)
+					sb.Append (",");
+				sb.Append (kv.Key.IdString);
+			}
 			PropertyService.Set ("ContextActions." + mimeType, sb.ToString ());
 		}
 	}

@@ -35,7 +35,11 @@ namespace MonoDevelop.SourceEditor
 		MarkerOperations,
 		DynamicAbbrev,
 		PulseCaret,
-		ToggleCodeFocus,
-		ToggleErrorTextMarker
+		ToggleErrorTextMarker,
+
+		NextIssue,
+		PrevIssue,
+		NextIssueError,
+		PrevIssueError
 	}
 }

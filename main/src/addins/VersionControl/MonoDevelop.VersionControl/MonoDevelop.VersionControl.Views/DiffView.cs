@@ -24,16 +24,10 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 using System;
-using System.Linq;
-using System.IO;
-using MonoDevelop.Ide;
 using MonoDevelop.Ide.Gui;
 using System.Collections.Generic;
-using System.Threading;
 using MonoDevelop.Core;
 using MonoDevelop.Ide.Gui.Content;
-using Mono.Addins;
-using MonoDevelop.Projects.Text;
 
 namespace MonoDevelop.VersionControl.Views
 {
@@ -53,6 +47,7 @@ namespace MonoDevelop.VersionControl.Views
 					ComparisonWidget.DiffEditor.Document.Text = info.Item.Repository.GetBaseText (info.Item.Path);
 					ComparisonWidget.SetLocal (ComparisonWidget.OriginalEditor.GetTextEditorData ());
 					widget.ShowAll ();
+					widget.SetToolbar (WorkbenchWindow.GetToolbar (this));
 				}
 				return widget;
 			}

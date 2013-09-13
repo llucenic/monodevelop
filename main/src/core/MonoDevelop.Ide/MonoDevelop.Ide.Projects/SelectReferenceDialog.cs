@@ -38,6 +38,7 @@ using MonoDevelop.Components;
 using MonoDevelop.Ide.Commands;
 using MonoDevelop.Components.Commands;
 using System.IO;
+using Mono.TextEditor;
 
 namespace MonoDevelop.Ide.Projects
 {
@@ -58,8 +59,10 @@ namespace MonoDevelop.Ide.Projects
 		AssemblyReferencePanel assemblyRefPanel;
 		DotNetProject configureProject;
 		List<IReferencePanel> panels = new List<IReferencePanel> ();
+		Notebook mainBook;
+		CombinedBox combinedBox;
 		SearchEntry filterEntry;
-		
+
 		List<FilePath> recentFiles;
 		bool recentFilesModified = false;
 		
@@ -87,8 +90,7 @@ namespace MonoDevelop.Ide.Projects
 
 		protected void OnMainBookSwitchPage (object o, Gtk.SwitchPageArgs args)
 		{
-			if (filterEntry != null)
-				filterEntry.Sensitive = args.PageNum != 3;
+			filterEntry.Sensitive = args.PageNum != 3;
 		}
 		
 		public void SetProject (DotNetProject configureProject)
@@ -154,7 +156,16 @@ namespace MonoDevelop.Ide.Projects
 		public SelectReferenceDialog ()
 		{
 			Build ();
-			
+
+			combinedBox = new CombinedBox ();
+			combinedBox.Show ();
+			mainBook = new Notebook ();
+			combinedBox.Add (mainBook);
+			alignment1.Add (combinedBox);
+			mainBook.ShowAll ();
+
+			filterEntry = combinedBox.FilterEntry;
+
 			boxRefs.WidthRequest = 200;
 			
 			refTreeStore = new ListStore (typeof (string), typeof(string), typeof(string), typeof(ProjectReference), typeof(Gdk.Pixbuf));
@@ -184,7 +195,7 @@ namespace MonoDevelop.Ide.Projects
 			panels.Add (projectRefPanel);
 			panels.Add (assemblyRefPanel);
 			
-			mainBook.RemovePage (mainBook.CurrentPage);
+			//mainBook.RemovePage (mainBook.CurrentPage);
 			
 			HBox tab = new HBox (false, 3);
 //			tab.PackStart (new Image (ImageService.GetPixbuf (MonoDevelop.Ide.Gui.Stock.Reference, IconSize.Menu)), false, false, 0);
@@ -233,43 +244,12 @@ namespace MonoDevelop.Ide.Projects
 		
 		void InsertFilterEntry ()
 		{
-			filterEntry = new SearchEntry ();
-			filterEntry.Entry.SetSizeRequest (200, filterEntry.Entry.SizeRequest ().Height);
-			filterEntry.Parent = mainBook;
-			filterEntry.Ready = true;
-			filterEntry.ForceFilterButtonVisible = true;
-			filterEntry.HasFocus = true;
-			filterEntry.Entry.CanFocus = true;
-			filterEntry.EmptyMessage = GettextCatalog.GetString ("Search (Control+F)");
 			filterEntry.KeyPressEvent += HandleFilterEntryKeyPressEvent;
 			filterEntry.Activated += HandleFilterEntryActivated;
-			
-			this.Shown += delegate {
-				filterEntry.Entry.Show ();
-				filterEntry.Show ();
-			};
-			
-			//hack to make sure the notebook tab row always has space for the filter entry
-			alignment1.SizeRequested += Alignment1SizeRequested;
-			
-			mainBook.SizeAllocated += delegate {
-				RepositionFilter ();
-			};
 			filterEntry.Changed += delegate {
 				foreach (var p in panels)
 					p.SetFilter (filterEntry.Query);
 			};
-			RepositionFilter ();
-		}
-		
-		[GLib.ConnectBefore]
-		void Alignment1SizeRequested (object o, SizeRequestedArgs args)
-		{
-			var req = mainBook.SizeRequest ();
-			var filterReq = filterEntry.SizeRequest ();
-			req.Width += filterReq.Width + 10;
-			args.Requisition = req;
-			args.RetVal = true;
 		}
 
 		void HandleFilterEntryActivated (object sender, EventArgs e)
@@ -287,26 +267,21 @@ namespace MonoDevelop.Ide.Projects
 			}
 		}
 		
-		void RepositionFilter ()
-		{
-			int w = filterEntry.SizeRequest ().Width;
-			int h = filterEntry.SizeRequest ().Height;
-			filterEntry.Allocation = new Gdk.Rectangle (mainBook.Allocation.Right - w - 1, mainBook.Allocation.Y, w, h);
-		}
-		
 		protected override void OnShown ()
 		{
 			base.OnShown ();
-			if (filterEntry != null)
-				filterEntry.HasFocus = true;
+			filterEntry.HasFocus = true;
 		}
 		
 		protected override bool OnKeyPressEvent (Gdk.EventKey evnt)
 		{
-			if (evnt.Key == Gdk.Key.f && evnt.State == Gdk.ModifierType.ControlMask) {
+			bool complete;
+			var accels = KeyBindingManager.AccelsFromKey (evnt, out complete);
+			if (complete && accels.Any (a => a.Equals (combinedBox.SearchKeyShortcut))) {
 				filterEntry.HasFocus = true;
 				return false;
 			}
+
 			return base.OnKeyPressEvent (evnt);
 		}
 
@@ -457,6 +432,77 @@ namespace MonoDevelop.Ide.Projects
 			base.OnDestroyed ();
 			SaveRecentFiles ();
 			recentFiles = null;
+		}
+	}
+
+	class CombinedBox: Gtk.EventBox
+	{
+		SearchEntry filterEntry;
+		KeyboardShortcut searchShortcut;
+
+		public SearchEntry FilterEntry {
+			get { return filterEntry; }
+		}
+
+		public CombinedBox ()
+		{
+			filterEntry = new SearchEntry ();
+			filterEntry.WidthRequest = 180;
+			filterEntry.Ready = true;
+			filterEntry.ForceFilterButtonVisible = true;
+			filterEntry.Entry.CanFocus = true;
+			filterEntry.RoundedShape = true;
+			filterEntry.HasFrame = true;
+			filterEntry.Parent = this;
+			filterEntry.Show ();
+
+			SearchKeyShortcut = new KeyboardShortcut (
+				Gdk.Key.f, Platform.IsMac? Gdk.ModifierType.MetaMask : Gdk.ModifierType.ControlMask
+			);
+		}
+
+		public KeyboardShortcut SearchKeyShortcut {
+			get { return searchShortcut; }
+			set {
+				searchShortcut = value;
+				var bindingLabel = KeyBindingManager.BindingToDisplayLabel (new KeyBinding (searchShortcut), false);
+				filterEntry.EmptyMessage = GettextCatalog.GetString ("Search ({0})", bindingLabel);
+			}
+		}
+
+		protected override void ForAll (bool include_internals, Callback callback)
+		{
+			base.ForAll (include_internals, callback);
+			if (filterEntry != null)
+				callback (filterEntry);
+		}
+
+		protected override void OnRemoved (Widget widget)
+		{
+			if (widget == filterEntry)
+				filterEntry = null;
+			else
+				base.OnRemoved (widget);
+		}
+
+		protected override void OnSizeAllocated (Gdk.Rectangle allocation)
+		{
+			base.OnSizeAllocated (allocation);
+			RepositionFilter ();
+		}
+
+		protected override void OnSizeRequested (ref Requisition requisition)
+		{
+			if (Child != null)
+				requisition = Child.SizeRequest ();
+			requisition.Width += filterEntry.SizeRequest ().Width;
+		}
+		
+		void RepositionFilter ()
+		{
+			int w = filterEntry.SizeRequest ().Width;
+			int h = filterEntry.SizeRequest ().Height;
+			filterEntry.SizeAllocate (new Gdk.Rectangle (Allocation.Width - w - 1, 0, w, h));
 		}
 	}
 }

@@ -181,15 +181,24 @@ namespace MonoDevelop.SourceEditor
 		public Pango.FontDescription Font {
 			get { return DefaultSourceEditorOptions.Instance.Font; }
 		}
-
+		
 		public string FontName {
 			get { return DefaultSourceEditorOptions.Instance.FontName; }
 			set { throw new NotSupportedException (); }
 		}
 
-		public Mono.TextEditor.Highlighting.ColorScheme GetColorStyle (Gtk.Style widgetStyle)
+		public Pango.FontDescription GutterFont {
+			get { return DefaultSourceEditorOptions.Instance.GutterFont; }
+		}
+		
+		public string GutterFontName {
+			get { return DefaultSourceEditorOptions.Instance.GutterFontName; }
+			set { throw new NotSupportedException (); }
+		}
+
+		public Mono.TextEditor.Highlighting.ColorScheme GetColorStyle ()
 		{
-			return DefaultSourceEditorOptions.Instance.GetColorStyle (widgetStyle);
+			return DefaultSourceEditorOptions.Instance.GetColorStyle ();
 		}
 
 		public bool HighlightCaretLine {
@@ -199,11 +208,6 @@ namespace MonoDevelop.SourceEditor
 
 		public bool HighlightMatchingBracket {
 			get { return DefaultSourceEditorOptions.Instance.HighlightMatchingBracket; }
-			set { throw new NotSupportedException (); }
-		}
-
-		public bool ShowEolMarkers {
-			get { return DefaultSourceEditorOptions.Instance.ShowEolMarkers; }
 			set { throw new NotSupportedException (); }
 		}
 
@@ -217,11 +221,6 @@ namespace MonoDevelop.SourceEditor
 			set { throw new NotSupportedException (); }
 		}
 
-		public bool ShowInvalidLines {
-			get { return DefaultSourceEditorOptions.Instance.ShowInvalidLines; }
-			set { throw new NotSupportedException (); }
-		}
-
 		public bool ShowLineNumberMargin {
 			get { return DefaultSourceEditorOptions.Instance.ShowLineNumberMargin; }
 			set { throw new NotSupportedException (); }
@@ -232,16 +231,6 @@ namespace MonoDevelop.SourceEditor
 			set { throw new NotSupportedException (); }
 		}
 
-		public bool ShowSpaces {
-			get { return DefaultSourceEditorOptions.Instance.ShowSpaces; }
-			set { throw new NotSupportedException (); }
-		}
-
-		public bool ShowTabs {
-			get { return DefaultSourceEditorOptions.Instance.ShowTabs; }
-			set { throw new NotSupportedException (); }
-		}
-		
 		public bool EnableAnimations {
 			get { return DefaultSourceEditorOptions.Instance.EnableAnimations; }
 			set { throw new NotSupportedException (); }
@@ -260,6 +249,31 @@ namespace MonoDevelop.SourceEditor
 		public double Zoom {
 			get { return DefaultSourceEditorOptions.Instance.Zoom; }
 			set { DefaultSourceEditorOptions.Instance.Zoom = value; }
+		}
+
+		public bool DrawIndentationMarkers {
+			get { return DefaultSourceEditorOptions.Instance.DrawIndentationMarkers; }
+			set { DefaultSourceEditorOptions.Instance.DrawIndentationMarkers = value; }
+		}
+
+		public ShowWhitespaces ShowWhitespaces  {
+			get { return DefaultSourceEditorOptions.Instance.ShowWhitespaces; }
+			set { DefaultSourceEditorOptions.Instance.ShowWhitespaces = value; }
+		}
+
+		public IncludeWhitespaces IncludeWhitespaces {
+			get { return DefaultSourceEditorOptions.Instance.IncludeWhitespaces; }
+			set { DefaultSourceEditorOptions.Instance.IncludeWhitespaces = value; }
+		}
+
+		public bool WrapLines {
+			get { return DefaultSourceEditorOptions.Instance.WrapLines; }
+			set { DefaultSourceEditorOptions.Instance.WrapLines = value; }
+		}
+
+		public bool EnableQuickDiff {
+			get { return DefaultSourceEditorOptions.Instance.EnableQuickDiff; }
+			set { DefaultSourceEditorOptions.Instance.EnableQuickDiff = value; }
 		}
 
 		public void ZoomIn ()
@@ -302,10 +316,6 @@ namespace MonoDevelop.SourceEditor
 			get { return DefaultSourceEditorOptions.Instance.EnableAutoCodeCompletion; }
 		}
 
-		public bool EnableCodeCompletion {
-			get { return DefaultSourceEditorOptions.Instance.EnableCodeCompletion; }
-		}
-
 		public bool EnableSemanticHighlighting {
 			get { return DefaultSourceEditorOptions.Instance.EnableSemanticHighlighting; }
 		}
@@ -332,6 +342,11 @@ namespace MonoDevelop.SourceEditor
 		public bool UseViModes {
 			get { return DefaultSourceEditorOptions.Instance.UseViModes; }
 		}
+
+		public bool EnableSelectionWrappingKeys { 
+			get { return DefaultSourceEditorOptions.Instance.AutoInsertMatchingBracket; } 
+		}
+
 
 		#endregion
 

@@ -51,18 +51,12 @@ namespace MonoDevelop.Ide.Gui
 		
 		public T GetContent <T>() where T : class
 		{
-			return window.ActiveViewContent.GetContent<T> ();
+			return (T) window.ActiveViewContent.GetContent (typeof(T));
 		}
 		
 		object ICommandRouter.GetNextCommandTarget ()
 		{
 			return doc.ExtendedCommandTargetChain;
-		}
-		
-		[CommandHandler (FileCommands.CloseFile)]
-		protected void OnCloseFile ()
-		{
-			window.CloseWindow (false, true, 0);
 		}
 		
 		[CommandHandler (FileCommands.Save)]
@@ -103,7 +97,22 @@ namespace MonoDevelop.Ide.Gui
 		{
 			info.Enabled = window.ViewContent.ContentName != null && !window.ViewContent.IsViewOnly;
 		}
+
+		[CommandHandler (FileCommands.OpenContainingFolder)]
+		protected void OnOpenFolder ()
+		{
+			// A tab will always hold a file, never a folder.
+			FilePath path = Path.GetDirectoryName (doc.FileName);
+			DesktopService.OpenFolder (path);
+		}
 		
+		[CommandUpdateHandler (FileCommands.OpenContainingFolder)]
+		protected void OnUpdateOpenFolder (CommandInfo info)
+		{
+			info.Visible = doc != null && !doc.FileName.IsNullOrEmpty;
+			info.Enabled = info.Visible;
+		}
+
 		
 		/*** Edit commands ***/
 		
@@ -486,11 +495,18 @@ namespace MonoDevelop.Ide.Gui
 		}
 		
 		#region Folding
+		bool IsFoldMarkerMarginEnabled {
+			get {
+				return PropertyService.Get ("ShowFoldMargin", false);
+			}
+		}
+
 		[CommandUpdateHandler (EditCommands.ToggleAllFoldings)]
 		[CommandUpdateHandler (EditCommands.FoldDefinitions)]
+		[CommandUpdateHandler (EditCommands.ToggleFolding)]
 		protected void UpdateFoldCommands (CommandInfo info)
 		{
-			info.Enabled = GetContent <IFoldable> () != null;
+			info.Enabled = GetContent <IFoldable> () != null && IsFoldMarkerMarginEnabled;
 		}
 		
 		[CommandHandler (EditCommands.ToggleAllFoldings)]
@@ -504,13 +520,7 @@ namespace MonoDevelop.Ide.Gui
 		{
 			GetContent <IFoldable> ().FoldDefinitions ();
 		}
-		
-		[CommandUpdateHandler (EditCommands.ToggleFolding)]
-		protected void UpdateToggleFolding (CommandInfo info)
-		{
-			info.Enabled = GetContent <IFoldable> () != null;
-		}
-		
+
 		[CommandHandler (EditCommands.ToggleFolding)]
 		protected void ToggleFolding ()
 		{

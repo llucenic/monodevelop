@@ -40,7 +40,7 @@ using MonoDevelop.Ide.Gui.Components;
 
 namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 {
-	public class ProjectReferenceNodeBuilder: TypeNodeBuilder
+	class ProjectReferenceNodeBuilder: TypeNodeBuilder
 	{
 		public override Type NodeDataType {
 			get { return typeof(ProjectReference); }
@@ -126,18 +126,16 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 			if (tb != null)
 				tb.UpdateAll ();
 		}
-
-
 	}
 	
-	public class ProjectReferenceNodeCommandHandler: NodeCommandHandler
+	class ProjectReferenceNodeCommandHandler: NodeCommandHandler
 	{
 		public override void ActivateItem ()
 		{
 			ProjectReference pref = CurrentNode.DataItem as ProjectReference;
 			if (pref != null) {
 				foreach (string fileName in pref.GetReferencedFileNames (IdeApp.Workspace.ActiveConfiguration))
-					IdeApp.Workbench.OpenDocument (fileName);
+					IdeApp.Workbench.OpenDocument (fileName, pref.OwnerProject);
 			}
 		}
 				

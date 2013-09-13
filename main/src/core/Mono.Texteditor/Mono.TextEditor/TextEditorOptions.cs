@@ -50,15 +50,11 @@ namespace Mono.TextEditor
 		bool showIconMargin = true;
 		bool showLineNumberMargin = true;
 		bool showFoldMargin = true;
-		bool showInvalidLines = true;
 		IndentStyle indentStyle = IndentStyle.Virtual;
 		
 		int  rulerColumn = 80;
 		bool showRuler = false;
 		
-		bool showTabs   = false;
-		bool showSpaces = false;
-		bool showEolMarkers = false;
 		bool enableSyntaxHighlighting = true;
 		bool highlightMatchingBracket = true;
 		bool highlightCaretLine = false;
@@ -66,8 +62,8 @@ namespace Mono.TextEditor
 		bool allowTabsAfterNonTabs = true;
 		bool useAntiAliasing = true;
 		string fontName = DEFAULT_FONT;
-		string colorStyle = "text";
-		Pango.FontDescription font;
+		string colorStyle = "Default";
+		Pango.FontDescription font, gutterFont;
 		
 		double zoom = 1d;
 		IWordFindStrategy wordFindStrategy = new EmacsWordFindStrategy (true);
@@ -287,42 +283,6 @@ namespace Mono.TextEditor
 			}
 		}
 
-		public virtual bool ShowInvalidLines {
-			get {
-				return showInvalidLines;
-			}
-			set {
-				if (showInvalidLines != value) {
-					showInvalidLines = value;
-					OnChanged (EventArgs.Empty);
-				}
-			}
-		}
-
-		public virtual bool ShowTabs {
-			get {
-				return showTabs;
-			}
-			set {
-				if (showTabs != value) {
-					showTabs = value;
-					OnChanged (EventArgs.Empty);
-				}
-			}
-		}
-
-		public virtual bool ShowEolMarkers {
-			get {
-				return showEolMarkers;
-			}
-			set {
-				if (showEolMarkers != value) {
-					showEolMarkers = value;
-					OnChanged (EventArgs.Empty);
-				}
-			}
-		}
-
 		public virtual bool HighlightCaretLine {
 			get {
 				return highlightCaretLine;
@@ -335,17 +295,6 @@ namespace Mono.TextEditor
 			}
 		}
 
-		public virtual bool ShowSpaces {
-			get {
-				return showSpaces;
-			}
-			set {
-				if (showSpaces != value) {
-					showSpaces = value;
-					OnChanged (EventArgs.Empty);
-				}
-			}
-		}
 
 		public virtual int RulerColumn {
 			get {
@@ -402,6 +351,11 @@ namespace Mono.TextEditor
 				font.Dispose ();
 				font = null;
 			}
+
+			if (gutterFont != null) {
+				gutterFont.Dispose ();
+				gutterFont = null;
+			}
 		}
 
 		
@@ -433,7 +387,38 @@ namespace Mono.TextEditor
 				return font;
 			}
 		}
-		
+		string gutterFontName;
+		public virtual string GutterFontName {
+			get {
+				return gutterFontName;
+			}
+			set {
+				if (gutterFontName != value) {
+					DisposeFont ();
+					gutterFontName = value;
+					OnChanged (EventArgs.Empty);
+				}
+			}
+		}
+
+		public Pango.FontDescription GutterFont {
+			get {
+				if (gutterFont == null) {
+					try {
+						if (!string.IsNullOrEmpty (GutterFontName))
+							gutterFont = Pango.FontDescription.FromString (GutterFontName);
+					} catch {
+						Console.WriteLine ("Could not load gutter font: {0}", GutterFontName);
+					}
+					if (gutterFont == null || String.IsNullOrEmpty (gutterFont.Family))
+						gutterFont = Gtk.Widget.DefaultStyle.FontDescription.Copy ();
+					if (gutterFont != null)
+						gutterFont.Size = (int)(gutterFont.Size * Zoom);
+				}
+				return gutterFont;
+			}
+		}
+
 		public virtual string ColorScheme {
 			get {
 				return colorStyle;
@@ -470,10 +455,89 @@ namespace Mono.TextEditor
 				}
 			}
 		}
-		
-		public virtual ColorScheme GetColorStyle (Gtk.Style widgetStyle)
+
+		bool drawIndentationMarkers = false;
+		public virtual bool DrawIndentationMarkers {
+			get {
+				return drawIndentationMarkers;
+			}
+			set {
+				if (drawIndentationMarkers != value) {
+					drawIndentationMarkers = value;
+					OnChanged (EventArgs.Empty);
+				}
+			}
+		}
+
+		ShowWhitespaces showWhitespaces = ShowWhitespaces.Never;
+		public virtual ShowWhitespaces ShowWhitespaces {
+			get {
+				return showWhitespaces;
+			}
+			set {
+				if (showWhitespaces != value) {
+					showWhitespaces = value;
+					OnChanged (EventArgs.Empty);
+				}
+			}
+		}
+
+		IncludeWhitespaces includeWhitespaces = IncludeWhitespaces.All;
+		public virtual IncludeWhitespaces IncludeWhitespaces {
+			get {
+				return includeWhitespaces;
+			}
+			set {
+				if (includeWhitespaces != value) {
+					includeWhitespaces = value;
+					OnChanged (EventArgs.Empty);
+				}
+			}
+		}
+
+		bool wrapLines = false;
+		public virtual bool WrapLines {
+			get {
+				return false;
+//				return wrapLines;
+			}
+			set {
+				if (wrapLines != value) {
+					wrapLines = value;
+					OnChanged (EventArgs.Empty);
+				}
+			}
+		}
+
+		bool enableQuickDiff = true;
+		public virtual bool EnableQuickDiff {
+			get {
+				return enableQuickDiff;
+			}
+			set {
+				if (enableQuickDiff != value) {
+					enableQuickDiff = value;
+					OnChanged (EventArgs.Empty);
+				}
+			}
+		}
+
+		bool enableSelectionWrappingKeys = true;
+		public virtual bool EnableSelectionWrappingKeys {
+			get {
+				return enableSelectionWrappingKeys;
+			}
+			set {
+				if (enableSelectionWrappingKeys != value) {
+					enableSelectionWrappingKeys = value;
+					OnChanged (EventArgs.Empty);
+				}
+			}
+		}
+
+		public virtual ColorScheme GetColorStyle ()
 		{
-			return SyntaxModeService.GetColorStyle (widgetStyle, ColorScheme);
+			return SyntaxModeService.GetColorStyle (ColorScheme);
 		}
 		
 		public virtual void CopyFrom (TextEditorOptions other)
@@ -486,11 +550,7 @@ namespace Mono.TextEditor
 			showIconMargin = other.showIconMargin;
 			showLineNumberMargin = other.showLineNumberMargin;
 			showFoldMargin = other.showFoldMargin;
-			showInvalidLines = other.showInvalidLines;
-			showTabs = other.showTabs;
-			showEolMarkers = other.showEolMarkers;
 			highlightCaretLine = other.highlightCaretLine;
-			showSpaces = other.showSpaces;
 			rulerColumn = other.rulerColumn;
 			showRuler = other.showRuler;
 			indentStyle = other.indentStyle;
@@ -501,6 +561,9 @@ namespace Mono.TextEditor
 			defaultEolMarker = other.defaultEolMarker;
 			enableAnimations = other.enableAnimations;
 			useAntiAliasing = other.useAntiAliasing;
+			drawIndentationMarkers = other.drawIndentationMarkers;
+			showWhitespaces = other.showWhitespaces;
+			includeWhitespaces = other.includeWhitespaces;
 			DisposeFont ();
 			OnChanged (EventArgs.Empty);
 		}

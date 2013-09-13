@@ -29,12 +29,17 @@ using Mono.TextEditor;
 using MonoDevelop.SourceEditor;
 using System.Text;
 using System.Collections.Generic;
+using MonoDevelop.Ide.TypeSystem;
 
 namespace MonoDevelop.AnalysisCore.Gui
 {
-	class ResultTooltipProvider : ITooltipProvider
+	class ResultTooltipProvider : TooltipProvider
 	{
-		public TooltipItem GetItem (TextEditor editor, int offset)
+		public ResultTooltipProvider ()
+		{
+		}
+
+		public override TooltipItem GetItem (TextEditor editor, int offset)
 		{
 			//get the ResultsEditorExtension from the editor
 			var ed = (ExtensibleTextEditor) editor;
@@ -53,7 +58,7 @@ namespace MonoDevelop.AnalysisCore.Gui
 			return new TooltipItem (results, editor.Document.GetLineByOffset (offset));
 		}
 
-		public Gtk.Window CreateTooltipWindow (TextEditor editor, int offset, Gdk.ModifierType modifierState, TooltipItem item)
+		protected override Gtk.Window CreateTooltipWindow (TextEditor editor, int offset, Gdk.ModifierType modifierState, TooltipItem item)
 		{
 			//create a message string from all the results
 			var results = (IList<Result>)item.Item;
@@ -66,9 +71,9 @@ namespace MonoDevelop.AnalysisCore.Gui
 					sb.AppendLine ();
 				sb.Append (r.Level.ToString ());
 				sb.Append (": ");
-				sb.Append (r.Message);
+				sb.Append (AmbienceService.EscapeText (r.Message));
 			}
-			
+
 			//FIXME: use a nicer, more specialized tooltip window, with results formatting and hints about 
 			// commands and stuff
 			var win = new LanguageItemWindow ((ExtensibleTextEditor) editor, modifierState, null, sb.ToString (), null);
@@ -77,16 +82,11 @@ namespace MonoDevelop.AnalysisCore.Gui
 			return win;
 		}
 
-		public void GetRequiredPosition (TextEditor editor, Gtk.Window tipWindow, out int requiredWidth, out double xalign)
+		protected override void GetRequiredPosition (TextEditor editor, Gtk.Window tipWindow, out int requiredWidth, out double xalign)
 		{
 			var win = (LanguageItemWindow) tipWindow;
 			requiredWidth = win.SetMaxWidth (win.Screen.Width);
 			xalign = 0.5;
-		}
-
-		public bool IsInteractive (TextEditor editor, Gtk.Window tipWindow)
-		{
-			return false;
 		}
 	}
 }

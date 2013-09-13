@@ -47,7 +47,16 @@ namespace MonoDevelop.Ide.Gui.Dialogs
 		public FeedbackDialog (int x, int y): base (Gtk.WindowType.Toplevel)
 		{
 			SetDefaultSize (350, 200);
-			Move (x - 350, y - 200);
+			if (x == -1 && y == -1) {
+				int ww, wh;
+				IdeApp.Workbench.RootWindow.GdkWindow.GetSize (out ww, out wh);
+				IdeApp.Workbench.RootWindow.GdkWindow.GetOrigin (out x, out y);
+				x = ww / 2 - 350 / 2;
+				y = wh / 2 - 200 / 2;
+				Move (x, y);
+			} else
+				Move (x - 350, y - 200);
+
 			mainFrame = new Gtk.Frame ();
 			
 			mainBox = new Gtk.VBox ();
@@ -77,7 +86,10 @@ namespace MonoDevelop.Ide.Gui.Dialogs
 			// Body
 			
 			textEntry = new TextViewWithEmptyMessage ();
-			textEntry.EmptyMessage = GettextCatalog.GetString ("Tell us how we can make MonoDevelop better.");
+			textEntry.EmptyMessage = GettextCatalog.GetString (
+				"Tell us how we can make {0} better.",
+				BrandingService.SuiteName
+			);
 			textEntry.AcceptsTab = false;
 			textEntry.WrapMode = Gtk.WrapMode.Word;
 			textEntry.WidthRequest = 300;

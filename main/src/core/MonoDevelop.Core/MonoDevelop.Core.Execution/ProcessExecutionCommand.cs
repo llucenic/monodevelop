@@ -32,7 +32,8 @@ namespace MonoDevelop.Core.Execution
 	public class ProcessExecutionCommand: ExecutionCommand
 	{
 		IDictionary<string, string> environmentVariables;
-		
+		string arguments;
+
 		public ProcessExecutionCommand(): this (null)
 		{
 		}
@@ -60,15 +61,12 @@ namespace MonoDevelop.Core.Execution
 			this.environmentVariables = environmentVariables;
 		}
 		
-		public override string CommandString {
-			get {
-				return Command;
-			}
-		}
-		
 		public string Command { get; set; }
 		
-		public string Arguments { get; set; }
+		public string Arguments {
+			get { return arguments ?? ""; }
+			set { arguments = value; }
+		}
 		
 		public string WorkingDirectory { get; set; }
 		

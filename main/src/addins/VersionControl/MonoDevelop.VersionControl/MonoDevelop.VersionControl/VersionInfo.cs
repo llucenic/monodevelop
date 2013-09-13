@@ -1,7 +1,5 @@
 
-using System;
 using MonoDevelop.Core;
-using System.IO;
 
 namespace MonoDevelop.VersionControl
 {
@@ -28,16 +26,33 @@ namespace MonoDevelop.VersionControl
 			this.remoteStatus = remoteStatus;
 			this.remoteRevision = remoteRevision;
 		}
+
+		public bool Equals (VersionInfo obj)
+		{
+			if (obj == null)
+				return false;
+			return localPath == obj.localPath &&
+				repositoryPath == obj.repositoryPath &&
+				isDirectory == obj.isDirectory &&
+				status == obj.status &&
+				revision == obj.revision &&
+				remoteStatus == obj.remoteStatus &&
+				remoteRevision == obj.remoteRevision &&
+				AllowedOperations == obj.AllowedOperations;
+		}
 		
 		internal void Init (Repository repo)
 		{
 			ownerRepository = repo;
+			RequiresRefresh = false;
 		}
 		
 		public static VersionInfo CreateUnversioned (FilePath path, bool isDirectory)
 		{
 			return new VersionInfo (path, "", isDirectory, VersionStatus.Unversioned, null, VersionStatus.Unversioned, null);
 		}
+
+		internal bool RequiresRefresh { get; set; }
 		
 		public bool IsVersioned {
 			get { return (status & VersionStatus.Versioned) != 0; }

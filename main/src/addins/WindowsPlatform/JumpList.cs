@@ -43,7 +43,12 @@ namespace MonoDevelop.Platform
 			
 			this.recentFiles = DesktopService.RecentFiles;
 			this.recentFiles.Changed += this.OnRecentFilesChanged;
-			this.UpdateJumpList ();
+
+			try {
+				UpdateJumpList();
+			} catch (Exception ex) {
+				MonoDevelop.Core.LoggingService.LogError ("Could not update jumplists", ex);
+			}
 		}
 
 		private void OnRecentFilesChanged (object sender, EventArgs args)
@@ -58,7 +63,11 @@ namespace MonoDevelop.Platform
 
 		private void OnUpdateTimerEllapsed (object sender, EventArgs args)
 		{
-			this.UpdateJumpList ();
+			try {
+				UpdateJumpList();
+			} catch (Exception ex) {
+				MonoDevelop.Core.LoggingService.LogError ("Could not update jumplists", ex);
+			}
 		}
 
 		private void UpdateJumpList ()
@@ -97,8 +106,7 @@ namespace MonoDevelop.Platform
 			ProcessModule monoDevelopAssembly = Process.GetCurrentProcess ().MainModule;
 			string exePath = monoDevelopAssembly.FileName;
 			string executeString = exePath + " %1";
-			string version = monoDevelopAssembly.FileVersionInfo.ProductVersion;
-			string progId = "MonoDevelop" + version;
+			string progId = MonoDevelop.Core.BrandingService.ProfileDirectoryName + "." + IdeApp.Version;
 			string appId = progId;
 			
 			Taskbar.TaskbarManager.Instance.ApplicationId = progId;

@@ -64,8 +64,8 @@ namespace Mono.TextEditor
 			options.ShowLineNumberMargin = false;
 			options.ShowFoldMargin = false;
 			options.ShowIconMargin = false;
-			options.ShowInvalidLines = false;
 			options.Zoom = 0.8;
+			codeSegmentEditor.Document.MimeType = editor.MimeType;
 			codeSegmentEditor.Document.ReadOnly = true;
 			codeSegmentEditor.Options = options;
 			
@@ -83,6 +83,9 @@ namespace Mono.TextEditor
 			this.Decorated = false;
 			Gdk.Pointer.Grab (this.GdkWindow, true, Gdk.EventMask.ButtonPressMask | Gdk.EventMask.ButtonReleaseMask | Gdk.EventMask.PointerMotionMask | Gdk.EventMask.EnterNotifyMask | Gdk.EventMask.LeaveNotifyMask, null, null, Gtk.Global.CurrentEventTime);
 			Gtk.Grab.Add (this);
+			GrabBrokenEvent += delegate {
+				Destroy ();
+			};
 			codeSegmentEditor.GrabFocus ();
 		}
 		

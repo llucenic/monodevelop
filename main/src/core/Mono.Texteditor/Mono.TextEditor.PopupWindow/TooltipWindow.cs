@@ -40,14 +40,14 @@ namespace Mono.TextEditor.PopupWindow
 		bool nudgeVertical = false;
 		bool nudgeHorizontal = false;
 		WindowTransparencyDecorator decorator;
-		FixedWidthWrapLabel label;
-		
+		Label label;
+		string markup;
 		public string Markup {
 			get {
-				return label.Markup;
+				return markup;
 			}
 			set {
-				label.Markup = value;
+				label.Markup = markup = value;
 			}
 		}
 		
@@ -64,11 +64,9 @@ namespace Mono.TextEditor.PopupWindow
 			//fake widget name for stupid theme engines
 			this.Name = "gtk-tooltip";
 			
-			label = new FixedWidthWrapLabel ();
-			label.Wrap = Pango.WrapMode.WordChar;
-			label.Indent = -20;
-			label.BreakOnCamelCasing = true;
-			label.BreakOnPunctuation = true;
+			label = new Label ();
+			label.UseMarkup = true;
+			label.Ellipsize =  Pango.EllipsizeMode.End;
 			this.BorderWidth = 3;
 			this.Title = "tooltip";
 			Add (label);
@@ -78,9 +76,11 @@ namespace Mono.TextEditor.PopupWindow
 		
 		public int SetMaxWidth (int maxWidth)
 		{
-			FixedWidthWrapLabel l = (FixedWidthWrapLabel)Child;
-			l.MaxWidth = maxWidth;
-			return l.RealWidth;
+			var l = (Label)Child;
+			l.Layout.Width = maxWidth;
+			int pw, ph;
+			l.Layout.GetPixelSize (out pw, out ph);
+			return pw;
 		}
 		
 		public bool NudgeVertical {
@@ -442,149 +442,5 @@ namespace Mono.TextEditor.PopupWindow
 				QueueResize ();
 			}
 		}
-		
-		public class WindowTransparencyDecorator
-	{
-		Gtk.Window window;
-		bool semiTransparent;
-		bool snooperInstalled;
-		uint snooperID;
-		const double opacity = 0.2;
-		Delegate snoopFunc;
-		
-		WindowTransparencyDecorator (Gtk.Window window)
-		{
-			this.window = window;
-			//HACK: Workaround for GTK# crasher bug where GC collects internal wrapper delegates
-			snoopFunc = TryBindGtkInternals (this);
-			
-			if (snoopFunc != null) {
-				window.Shown += ShownHandler;
-				window.Hidden += HiddenHandler;
-				window.Destroyed += DestroyedHandler;
-			} else {
-				snoopFunc = null;
-				window = null;
-			}
-		}
-		
-		public static WindowTransparencyDecorator Attach (Gtk.Window window)
-		{
-			return new WindowTransparencyDecorator (window);
-		}
-		
-		public void Detach ()
-		{
-			if (window == null)
-			return;
-			
-			//remove the snooper
-			HiddenHandler (null,  null);
-			
-			//annul allreferences between this and the window
-			window.Shown -= ShownHandler;
-			window.Hidden -= HiddenHandler;
-			window.Destroyed -= DestroyedHandler;
-			snoopFunc = null;
-			window = null;
-		}
-		
-		void ShownHandler (object sender, EventArgs args)
-		{
-			if (!snooperInstalled)
-				snooperID = InstallSnooper (snoopFunc);
-			snooperInstalled = true;
-			
-			//NOTE: we unset transparency when showing, instead of when hiding
-			//because the latter case triggers a metacity+compositing bug that shows the window again
-			SemiTransparent = false;
-		}
-		
-		void HiddenHandler (object sender, EventArgs args)
-		{
-			if (snooperInstalled)
-				RemoveSnooper (snooperID);
-			snooperInstalled = false;
-		}
-		
-		void DestroyedHandler (object sender, EventArgs args)
-		{
-			Detach ();
-		}
-		
-		#pragma warning disable 0169
-		
-		int TransparencyKeySnooper (IntPtr widget, IntPtr rawEvnt, IntPtr data)
-		{
-			if (rawEvnt != IntPtr.Zero) {
-				Gdk.EventKey evnt = new Gdk.EventKey (rawEvnt);
-				if (evnt != null && evnt.Key == Gdk.Key.Control_L || evnt.Key == Gdk.Key.Control_R)
-					SemiTransparent = (evnt.Type == Gdk.EventType.KeyPress);
-			}
-			return 0; //gboolean FALSE
-		}
-		
-		#pragma warning restore 0169
-		
-		bool SemiTransparent {
-			set {
-				if (semiTransparent != value) {
-					semiTransparent = value;
-					window.Opacity = semiTransparent? opacity : 1.0;
-				}
-			}
-		}
-		
-		#region Workaround for GTK# crasher bug where GC collects internal wrapper delegates
-		
-		static WindowTransparencyDecorator ()
-		{
-			snooper_install = typeof (Gtk.Key).GetMethod ("gtk_key_snooper_install", BindingFlags.NonPublic | BindingFlags.Static);
-			snooper_remove = typeof (Gtk.Key).GetMethod ("gtk_key_snooper_remove", BindingFlags.NonPublic | BindingFlags.Static);
-		}
-		
-		static MethodInfo snooper_install;
-		static MethodInfo snooper_remove;
-		
-		delegate int GtkKeySnoopFunc (IntPtr widget, IntPtr rawEvnt, IntPtr func_data);
-		
-		static uint InstallSnooper (Delegate del)
-		{
-			return (uint) snooper_install.Invoke (null, new object[] { del, IntPtr.Zero} );
-		}
-		
-		static void RemoveSnooper (uint id)
-		{
-			snooper_remove.Invoke (null, new object[] { id });
-		}
-		
-		static bool internalBindingWorks = true;
-		static bool internalBindingTried = false;
-		
-		static Delegate TryBindGtkInternals (WindowTransparencyDecorator instance)
-		{
-			if (internalBindingTried) {
-				if (!internalBindingWorks)
-					return null;
-			} else {
-				internalBindingTried = true;
-			}
-			
-			try {
-				Type delType = typeof(Gtk.Widget).Assembly.GetType ("GtkSharp.KeySnoopFuncNative");
-				System.Reflection.MethodInfo met = typeof (WindowTransparencyDecorator).GetMethod ("TransparencyKeySnooper", 
-				    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
-				Delegate ret = Delegate.CreateDelegate (delType, instance, met);
-				if (ret != null)
-					return ret;
-			} catch {}
-			
-			internalBindingWorks = false;
-			Console.WriteLine ("GTK# API has changed, and control-transparency will not be available for popups");
-			return null;
-		}
-		
-		#endregion
-	}
 	}
 }

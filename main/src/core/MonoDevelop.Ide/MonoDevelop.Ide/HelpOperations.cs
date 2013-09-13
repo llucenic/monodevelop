@@ -125,6 +125,11 @@ namespace MonoDevelop.Ide
 
 		public void ShowDocs (string path)
 		{
+			ShowDocs (path, null);
+		}
+
+		public void ShowDocs (string path, string topic)
+		{
 			if (path == null)
 				return;
 
@@ -135,7 +140,7 @@ namespace MonoDevelop.Ide
 				args = new[] { "--docdir", path };
 			}
 
-			var psi = GetStartPlatformSpecificMonoDoc (null, args);
+			var psi = GetStartPlatformSpecificMonoDoc (topic, args);
 			if (psi != null)
 				Process.Start (psi);
 		}
@@ -173,7 +178,7 @@ namespace MonoDevelop.Ide
 
 			if (!useExternalMonodoc)
 				MessageService.ShowError (
-					GettextCatalog.GetString ("You need a newer monodoc to use it externally from monodevelop. Using the integrated help viewer now."));
+					BrandingService.BrandApplicationName (GettextCatalog.GetString ("You need a newer monodoc to use it externally from MonoDevelop. Using the integrated help viewer now.")));
 		}
 		
 		string DirArgs {
@@ -224,7 +229,12 @@ namespace MonoDevelop.Ide
 		
 		public bool CanShowHelp (ResolveResult result)
 		{
-			return CanShowHelp (HelpService.GetMonoDocHelpUrl (result));
+			try {
+				return CanShowHelp (HelpService.GetMonoDocHelpUrl (result));
+			} catch (Exception e) {
+				LoggingService.LogError ("Error while trying to get monodoc help.", e);
+				return false;
+			}
 		}
 	}
 }

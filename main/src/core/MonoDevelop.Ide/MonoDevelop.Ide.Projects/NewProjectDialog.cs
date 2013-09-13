@@ -96,6 +96,9 @@ namespace MonoDevelop.Ide.Projects {
 				chk_combine_directory.Hide ();
 				lbl_subdirectory.Hide ();
 			}
+
+			TreeIter iter;
+			ExpandCategory ("C#", out iter);
 		}
 		
 		public void SelectTemplate (string id)
@@ -149,14 +152,16 @@ namespace MonoDevelop.Ide.Projects {
 			} while (catStore.IterNext (ref trial));
 			return false;
 		}
-		
-		void SelectCategory (string category)
+
+		bool ExpandCategory (string category, out TreeIter result)
 		{
 			string[] cats = category.Split ('/');
 			
 			TreeIter iter;
-			if (!catStore.GetIterFirst (out iter))
-				return;
+			if (!catStore.GetIterFirst (out iter)) {
+				result = TreeIter.Zero;
+				return false;
+			}
 			
 			TreeIter nextIter = iter;
 			for (int i = 0; i < cats.Length; i++) {
@@ -171,7 +176,15 @@ namespace MonoDevelop.Ide.Projects {
 			}
 			
 			lst_template_types.ExpandToPath (catStore.GetPath (iter));
-			lst_template_types.Selection.SelectIter (iter);
+			result = iter;
+			return true;
+		}
+		
+		void SelectCategory (string category)
+		{
+			TreeIter iter;
+			if (ExpandCategory (category, out iter))
+				lst_template_types.Selection.SelectIter (iter);
 		}
 		
 		void InitializeView()
@@ -412,10 +425,16 @@ namespace MonoDevelop.Ide.Projects {
 			
 			if (templateView.CurrentlySelected == null || name.Length == 0)
 				return false;
-				
+
 			ProjectTemplate item = (ProjectTemplate) templateView.CurrentlySelected;
 			
 			try {
+				if (Directory.Exists (ProjectLocation)) {
+					var btn = MessageService.AskQuestion (GettextCatalog.GetString ("Directory {0} already exists.\nDo you want to coninue the Project creation?", ProjectLocation), AlertButton.No, AlertButton.Yes);
+					if (btn != AlertButton.Yes)
+						return false;
+				}
+
 				System.IO.Directory.CreateDirectory (location);
 			} catch (IOException) {
 				MessageService.ShowError (GettextCatalog.GetString ("Could not create directory {0}. File already exists.", location));

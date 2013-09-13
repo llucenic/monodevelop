@@ -2,9 +2,9 @@ using System;
 using System.IO;
 using Gtk;
 using MonoDevelop.Core;
+using MonoDevelop.Components.Commands;
 using MonoDevelop.Ide.Gui;
 using MonoDevelop.Ide;
-using System.Text;
 using System.Linq;
 
 namespace MonoDevelop.VersionControl.Views
@@ -13,18 +13,16 @@ namespace MonoDevelop.VersionControl.Views
 	{
 	}
 	
-	public class LogView : BaseView, ILogView 
+	public class LogView : BaseView, ILogView
 	{
-		string filepath;
 		LogWidget widget;
-		Repository vc;
 		VersionInfo vinfo;
 		
 		ListStore changedpathstore;
 		
 		public LogWidget LogWidget {
 			get {
-				return this.widget;
+				return widget;
 			}
 		}
 		
@@ -71,8 +69,6 @@ namespace MonoDevelop.VersionControl.Views
 		
 		void CreateControlFromInfo ()
 		{
-			this.vc = info.Item.Repository;
-			this.filepath = info.Item.Path;
 			var lw = new LogWidget (info);
 			
 			widget = lw;
@@ -83,16 +79,15 @@ namespace MonoDevelop.VersionControl.Views
 			lw.History = this.info.History;
 			vinfo   = this.info.VersionInfo;
 		
+			if (WorkbenchWindow != null)
+				widget.SetToolbar (WorkbenchWindow.GetToolbar (this));
 		}
 		
 		public LogView (string filepath, bool isDirectory, Revision [] history, Repository vc) 
 			: base (Path.GetFileName (filepath) + " Log")
 		{
-			this.vc = vc;
-			this.filepath = filepath;
-			
 			try {
-				this.vinfo = vc.GetVersionInfo (filepath, false);
+				this.vinfo = vc.GetVersionInfo (filepath, VersionInfoQueryFlags.IgnoreCache);
 			}
 			catch (Exception ex) {
 				MessageService.ShowException (ex, GettextCatalog.GetString ("Version control command failed."));
@@ -115,6 +110,13 @@ namespace MonoDevelop.VersionControl.Views
 					CreateControlFromInfo ();
 				return widget; 
 			}
+		}
+
+		protected override void OnWorkbenchWindowChanged (EventArgs e)
+		{
+			base.OnWorkbenchWindowChanged (e);
+			if (WorkbenchWindow != null && widget != null)
+				widget.SetToolbar (WorkbenchWindow.GetToolbar (this));
 		}
 		
 		public override void Dispose ()
@@ -151,6 +153,19 @@ namespace MonoDevelop.VersionControl.Views
 		{
 		}
 		#endregion
+
+		[CommandHandler (MonoDevelop.Ide.Commands.EditCommands.Copy)]
+		protected void OnCopy ()
+		{
+			string data = widget.DiffText;
+			if (data == null)
+				return;
+
+			var clipboard = Clipboard.Get (Gdk.Atom.Intern ("CLIPBOARD", false));
+			clipboard.Text = data;
+			clipboard = Clipboard.Get (Gdk.Atom.Intern ("PRIMARY", false));
+			clipboard.Text = data;
+		}
 	}
 
 }

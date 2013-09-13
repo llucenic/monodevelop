@@ -24,7 +24,6 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using System;
 using MonoDevelop.Ide;
 using MonoDevelop.Ide.Gui;
 using MonoDevelop.VersionControl.Views;
@@ -34,10 +33,10 @@ namespace MonoDevelop.VersionControl
 {
 	public class DefaultMergeViewHandler : IMergeViewHandler
 	{
-		public bool CanHandle (VersionControlItem item, IViewContent primaryView)
+		public bool CanHandle (VersionControlItem item, DocumentView primaryView)
 		{
 			return (primaryView == null || primaryView.GetContent <ITextFile> () != null)
-				&& DesktopService.GetMimeTypeIsText (DesktopService.GetMimeTypeForUri (item.Path));
+				&& DesktopService.GetFileIsText (item.Path);
 		}
 
 		public IMergeView CreateView (VersionControlDocumentInfo info)

@@ -86,18 +86,13 @@ namespace MonoDevelop.Components
 			layout = new Pango.Layout (PangoContext);
 			if (FontDescription != null)
 				layout.FontDescription = FontDescription;
-			if (use_markup) {
-				layout.SetMarkup (brokentext != null? brokentext : (text ?? string.Empty));
-			} else {
-				layout.SetText (brokentext != null? brokentext : (text ?? string.Empty));
-			}
 			layout.Indent = (int) (indent * Pango.Scale.PangoScale);
 			layout.Wrap = wrapMode;
 			if (width >= 0)
 				layout.Width = (int)(width * Pango.Scale.PangoScale);
 			else
 				layout.Width = int.MaxValue;
-			QueueResize ();
+			SetLayoutMarkupAndResize ();
 		}
 		
 		protected override void OnDestroyed ()
@@ -236,12 +231,25 @@ namespace MonoDevelop.Components
 				}
 			}
 		}
+
+		void SetLayoutMarkupAndResize ()
+		{
+			if (layout != null) {
+				if (use_markup) {
+					layout.SetMarkup (brokentext ?? (text ?? string.Empty));
+				}
+				else {
+					layout.SetText (brokentext ?? (text ?? string.Empty));
+				}
+			}
+			QueueResize ();
+		}
 		
 		void breakText ()
 		{
 			brokentext = null;
 			if ((!breakOnCamelCasing && !breakOnPunctuation) || string.IsNullOrEmpty (text)) {
-				QueueResize ();
+				SetLayoutMarkupAndResize ();
 				return;
 			}
 			
@@ -250,7 +258,8 @@ namespace MonoDevelop.Components
 			bool prevIsLower = false;
 			bool inMarkup = false;
 			bool inEntity = false;
-			
+			int lineLength = 0;
+
 			for (int i = 0; i < text.Length; i++) {
 				char c = text[i];
 				
@@ -282,27 +291,34 @@ namespace MonoDevelop.Components
 					sb.Append (c);
 					continue;
 				}
-					
-				//insert breaks using zero-width space unicode char
-				if ((breakOnPunctuation && char.IsPunctuation (c))
-				    || (breakOnCamelCasing && prevIsLower && char.IsUpper (c)))
-					sb.Append ('\u200b');
-				
+
+				// Camel case breaks before the next word start
+				if (lineLength > 0) {
+					//insert breaks using zero-width space unicode char
+					if (breakOnCamelCasing && prevIsLower && char.IsUpper (c))
+						sb.Append ('\u200b');
+				}
+
 				sb.Append (c);
-				
+
+				// Punctuation breaks after the punctuation
+				if (lineLength > 0) {
+					//insert breaks using zero-width space unicode char
+					if (breakOnPunctuation && char.IsPunctuation (c)) 
+						sb.Append ('\u200b');
+				}
+				if (c == '\n' || c == '\r') {
+					lineLength = 0;
+				} else {
+					lineLength++;
+				}
+
 				if (breakOnCamelCasing)
 					prevIsLower = char.IsLower (c);
 			}
 			brokentext = sb.ToString ();
-			
-			if (layout != null) {
-				if (use_markup) {
-					layout.SetMarkup (brokentext != null? brokentext : (text ?? string.Empty));
-				} else {
-					layout.SetText (brokentext != null? brokentext : (text ?? string.Empty));
-				}
-			}
-			QueueResize ();
+
+			SetLayoutMarkupAndResize ();
 		}
 	}
 }

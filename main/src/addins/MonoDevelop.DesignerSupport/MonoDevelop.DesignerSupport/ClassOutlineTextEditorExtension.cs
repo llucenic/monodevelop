@@ -54,7 +54,7 @@ namespace MonoDevelop.DesignerSupport
 	/// The string comparison ignores symbols (e.g. sort 'Foo()' next to '~Foo()').
 	/// </remarks>
 	/// <seealso cref="MonoDevelop.DesignerSupport.ClassOutlineNodeComparer"/>
-	/// <seealso cref="MonoDevelop.DesignerSupport.ClassOutlineSortingProperties"/>
+	/// <seealso cref="MonoDevelop.DesignerSupport.ClassOutlineSettings"/>
 	public class ClassOutlineTextEditorExtension : TextEditorExtension, IOutlinedDocument
 	{
 		ParsedDocument lastCU = null;
@@ -92,7 +92,9 @@ namespace MonoDevelop.DesignerSupport
 			if (Document != null)
 				Document.DocumentParsed -= UpdateDocumentOutline;
 			RemoveRefillOutlineStoreTimeout ();
-
+			lastCU = null;
+			settings = null;
+			comparer = null;
 			base.Dispose ();
 		}
 
@@ -257,10 +259,14 @@ namespace MonoDevelop.DesignerSupport
 				return;
 			var w = (ScrolledWindow)outlineTreeView.Parent;
 			w.Destroy ();
-			outlineTreeModelSort.Dispose ();
-			outlineTreeModelSort = null;
-			outlineTreeStore.Dispose ();
-			outlineTreeStore = null;
+			if (outlineTreeModelSort != null) {
+				outlineTreeModelSort.Dispose ();
+				outlineTreeModelSort = null;
+			}
+			if (outlineTreeStore != null) {
+				outlineTreeStore.Dispose ();
+				outlineTreeStore = null;
+			}
 			outlineTreeView = null;
 			settings = null;
 			foreach (var tw in toolbarWidgets)
@@ -322,7 +328,7 @@ namespace MonoDevelop.DesignerSupport
 				return;
 			
 			foreach (var unresolvedCls in parsedDocument.TopLevelTypeDefinitions) {
-				var cls = document.Compilation.MainAssembly.GetTypeDefinition (unresolvedCls);
+				var cls = document.Compilation.MainAssembly.GetTypeDefinition (unresolvedCls.FullTypeName);
 				if (cls == null)
 					continue;
 				TreeIter childIter;
@@ -338,11 +344,21 @@ namespace MonoDevelop.DesignerSupport
 		static void AddTreeClassContents (TreeStore store, TreeIter parent, ParsedDocument parsedDocument, ITypeDefinition cls, IUnresolvedTypeDefinition part)
 		{
 			List<object> items = new List<object> ();
-			foreach (object o in cls.GetMembers (m => part.Region.FileName == m.Region.FileName && part.Region.IsInside (m.Region.Begin)))
-				items.Add (o);
-
+			if (cls.Kind != TypeKind.Delegate) {
+				foreach (var o in cls.GetMembers (m => part.Region.FileName == m.Region.FileName && part.Region.IsInside (m.Region.Begin))) {
+					items.Add (o);
+				}
+				foreach (var o in cls.GetNestedTypes (m => part.Region.FileName == m.Region.FileName && part.Region.IsInside (m.Region.Begin))) {
+					if (o.DeclaringType == cls)
+						items.Add (o);
+				}
+				foreach (var o in cls.GetConstructors (m => part.Region.FileName == m.Region.FileName && part.Region.IsInside (m.Region.Begin))) {
+					if (o.IsSynthetic)
+						continue;
+					items.Add (o);
+				}
+			}
 			items.Sort (ClassOutlineNodeComparer.CompareRegion);
-
 			List<FoldingRegion> regions = new List<FoldingRegion> ();
 			foreach (FoldingRegion fr in parsedDocument.UserRegions)
 				//check regions inside class

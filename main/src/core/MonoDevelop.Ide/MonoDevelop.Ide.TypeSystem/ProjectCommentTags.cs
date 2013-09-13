@@ -67,13 +67,13 @@ namespace MonoDevelop.Ide.TypeSystem
 			TaskService.InformCommentTasks (new CommentTasksChangedEventArgs (fileName, null, project));
 		}
 
-		public void Update (Project project)
+		internal void Update (Project project)
 		{
-			System.Threading.Tasks.Task.Factory.StartNew (delegate {
-				foreach (var file in project.Files) {
-					TypeSystemService.ParseFile (project, file.FilePath);
-				}
-			});
+			foreach (var file in project.Files) {
+				if (file.BuildAction != BuildAction.Compile)
+					continue;
+				TypeSystemService.ParseFile (project, file.FilePath);
+			}
 		}
 	}
 }

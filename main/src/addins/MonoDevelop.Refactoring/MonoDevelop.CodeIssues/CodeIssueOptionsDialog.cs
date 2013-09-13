@@ -31,21 +31,23 @@ using MonoDevelop.SourceEditor.QuickTasks;
 using ICSharpCode.NRefactory.CSharp;
 using Gtk;
 using MonoDevelop.CodeActions;
+using ICSharpCode.NRefactory.Refactoring;
 
 namespace MonoDevelop.CodeIssues
 {
 	partial class CodeIssueOptionsDialog : Gtk.Dialog
 	{
-		readonly InspectorResults r;
+		readonly BaseCodeIssueProvider inspector;
 		
-		public CodeIssueOptionsDialog (InspectorResults act)
+		public CodeIssueOptionsDialog (BaseCodeIssueProvider inspector)
 		{
-			this.r = act;
+			this.inspector = inspector;
 			Build ();
 			HasSeparator = false;
 
-			labelInspectionTitle.Text = r.Inspector.Title;
-			var s = r.Inspector.GetSeverity ();
+			isEnabledCheckbutton.Active = inspector.GetIsEnabled ();
+			labelInspectionTitle.Text = inspector.Title;
+			var s = inspector.GetSeverity ();
 			radiobuttonHide.Active = s == Severity.None;
 			radiobuttonError.Active = s == Severity.Error;
 			radiobuttonWarning.Active = s == Severity.Warning;
@@ -62,16 +64,17 @@ namespace MonoDevelop.CodeIssues
 		void HandleClicked (object sender, EventArgs e)
 		{
 			if (radiobuttonHide.Active) {
-				r.Inspector.SetSeverity (Severity.None);
+				inspector.SetSeverity (Severity.None);
 			} else if (radiobuttonError.Active) {
-				r.Inspector.SetSeverity (Severity.Error);
+				inspector.SetSeverity (Severity.Error);
 			} else if (radiobuttonWarning.Active) {
-				r.Inspector.SetSeverity (Severity.Warning);
+				inspector.SetSeverity (Severity.Warning);
 			} else if (radiobuttonHint.Active) {
-				r.Inspector.SetSeverity (Severity.Hint);
+				inspector.SetSeverity (Severity.Hint);
 			} else if (radiobuttonSuggestion.Active) {
-				r.Inspector.SetSeverity (Severity.Suggestion);
+				inspector.SetSeverity (Severity.Suggestion);
 			}
+			inspector.SetIsEnabled (isEnabledCheckbutton.Active);
 			MonoDevelop.SourceEditor.OptionPanels.ColorShemeEditor.RefreshAllColors ();
 			Destroy ();
 		}

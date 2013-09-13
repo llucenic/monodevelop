@@ -28,7 +28,6 @@ using System;
 using MonoDevelop.Components.Commands;
 using MonoDevelop.Ide;
 using MonoDevelop.Projects;
-using MonoDevelop.Core;
 using System.Linq;
 using MonoDevelop.Ide.ProgressMonitoring;
 using System.Threading;
@@ -84,8 +83,16 @@ namespace MonoDevelop.VersionControl.Git
 		
 		protected override void Update (CommandArrayInfo info)
 		{
-			GitRepository repo = Repository;
-			if (repo != null) {
+			var repo = Repository;
+			if (repo == null)
+				return;
+
+			IWorkspaceObject wob = IdeApp.ProjectOperations.CurrentSelectedItem as IWorkspaceObject;
+			if (wob == null)
+				return;
+			if (((wob is WorkspaceItem) && ((WorkspaceItem)wob).ParentWorkspace == null) ||
+			    (wob.BaseDirectory.CanonicalPath == repo.RootPath.CanonicalPath))
+			{
 				string currentBranch = repo.GetCurrentBranch ();
 				foreach (Branch branch in repo.GetBranches ()) {
 					CommandInfo ci = info.Add (branch.Name, branch.Name);

@@ -41,7 +41,7 @@ using MonoDevelop.Ide.TypeSystem;
 namespace MonoDevelop.CSharp.Project
 {
 	
-	public partial class CompilerOptionsPanelWidget : Gtk.Bin
+	partial class CompilerOptionsPanelWidget : Gtk.Bin
 	{
 		DotNetProject project;
 		ListStore classListStore;
@@ -103,6 +103,9 @@ namespace MonoDevelop.CSharp.Project
 			langVerStore.AppendValues (GettextCatalog.GetString ("Default"));
 			langVerStore.AppendValues ("ISO-1");
 			langVerStore.AppendValues ("ISO-2");
+			langVerStore.AppendValues ("Version 3");
+			langVerStore.AppendValues ("Version 4");
+			langVerStore.AppendValues ("Version 5");
 			langVerCombo.Model = langVerStore;
 			langVerCombo.Active = (int) compilerParameters.LangVersion;
 		}
@@ -224,7 +227,7 @@ namespace MonoDevelop.CSharp.Project
 		}
 	}
 	
-	public class CompilerOptionsPanel : ItemOptionsPanel
+	class CompilerOptionsPanel : ItemOptionsPanel
 	{
 		CompilerOptionsPanelWidget widget;
 		

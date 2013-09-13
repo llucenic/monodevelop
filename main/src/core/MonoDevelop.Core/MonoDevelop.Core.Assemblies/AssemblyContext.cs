@@ -140,7 +140,7 @@ namespace MonoDevelop.Core.Assemblies
 					if (fx.IncludesFramework (pkg.TargetFramework))
 						yield return pkg;
 				} else {
-					if (fx.IsCompatibleWithFramework (pkg.TargetFramework))
+					if (fx.CanReferenceAssembliesTargetingFramework (pkg.TargetFramework))
 						yield return pkg;
 				}		
 			}
@@ -206,9 +206,13 @@ namespace MonoDevelop.Core.Assemblies
 				SystemAssembly found = null;
 				SystemAssembly gacFound = null;
 				foreach (SystemAssembly asm in GetAssembliesFromFullNameInternal (fullname)) {
+					if (asm.Package.IsFrameworkPackage && fx != null) {
+						if (fx.IncludesFramework (asm.Package.TargetFramework))
+							return asm;
+						else
+							continue;
+					}
 					found = asm;
-					if (asm.Package.IsFrameworkPackage && fx != null && fx.IncludesFramework (asm.Package.TargetFramework))
-						return asm;
 					if (asm.Package.IsGacPackage)
 						gacFound = asm;
 				}
@@ -306,7 +310,7 @@ namespace MonoDevelop.Core.Assemblies
 					if (fx.IncludesFramework (asm.Package.TargetFramework))
 						if (package == null || asm.Package.Name == package)
 							return asm.FullName;
-				} else if (fx.IsCompatibleWithFramework (asm.Package.TargetFramework)) {
+				} else if (fx.CanReferenceAssembliesTargetingFramework (asm.Package.TargetFramework)) {
 					if (package != null && asm.Package.Name == package)
 						return asm.FullName;
 					bestMatch = asm.FullName;
@@ -319,7 +323,7 @@ namespace MonoDevelop.Core.Assemblies
 		{
 			AssemblyName reqName = ParseAssemblyName (fullname);
 			foreach (KeyValuePair<string,SystemAssembly> pair in assemblyFullNameToAsm) {
-				AssemblyName foundName = ParseAssemblyName (pair.Key);
+				AssemblyName foundName = pair.Value.AssemblyName;
 				if (reqName.Name == foundName.Name && (reqName.Version == null || reqName.Version.CompareTo (foundName.Version) < 0)) {
 					SystemAssembly asm = pair.Value;
 					while (asm != null) {
@@ -420,7 +424,7 @@ namespace MonoDevelop.Core.Assemblies
 			//if the asm is not a framework asm, we don't upgrade it automatically
 			if (!fxAsms.Any ()) {
 				// Return null if the package is not compatible with the requested version
-				if (fx.IsCompatibleWithFramework (asm.Package.TargetFramework))
+				if (fx.CanReferenceAssembliesTargetingFramework (asm.Package.TargetFramework))
 					return asm;
 				else
 					return null;
@@ -531,7 +535,7 @@ namespace MonoDevelop.Core.Assemblies
 			packages.Add (package);
 		}
 
-		public AssemblyName ParseAssemblyName (string fullname)
+		public static AssemblyName ParseAssemblyName (string fullname)
 		{
 			AssemblyName aname = new AssemblyName ();
 			int i = fullname.IndexOf (',');

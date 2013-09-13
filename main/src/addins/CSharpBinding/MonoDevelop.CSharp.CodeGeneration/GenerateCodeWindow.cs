@@ -31,10 +31,11 @@ using MonoDevelop.Ide.Gui;
 using MonoDevelop.Refactoring;
 using System.Collections.Generic;
 using MonoDevelop.Ide;
+using Mono.TextEditor.PopupWindow;
 
 namespace MonoDevelop.CodeGeneration
 {
-	public partial class GenerateCodeWindow : Gtk.Window
+	partial class GenerateCodeWindow : Gtk.Window
 	{
 		TreeStore generateActionsStore = new TreeStore (typeof(Gdk.Pixbuf), typeof (string), typeof (ICodeGenerator));
 		

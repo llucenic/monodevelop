@@ -134,8 +134,10 @@ namespace MonoDevelop.Ide.Projects
         {
             store.Clear ();
 
+			bool isPcl = configureProject is PortableDotNetProject;
+
             foreach (SystemAssembly systemAssembly in targetContext.GetAssemblies (targetVersion)) {
-                if (systemAssembly.Package.IsFrameworkPackage && systemAssembly.Name == "mscorlib")
+				if (systemAssembly.Package.IsFrameworkPackage && (isPcl || systemAssembly.Name == "mscorlib"))
                     continue;
 				
 				bool selected = IsSelected (ReferenceType.Package, systemAssembly.FullName, systemAssembly.Package.Name);
@@ -155,7 +157,7 @@ namespace MonoDevelop.Ide.Projects
 				}
 				string pkg = systemAssembly.Package.GetDisplayName ();
 				if (systemAssembly.Package.IsInternalPackage)
-					pkg += " " + GettextCatalog.GetString ("(Provided by MonoDevelop)");
+					pkg += " " + GettextCatalog.GetString ("(Provided by {0})", BrandingService.ApplicationName);
 				
 				store.AppendValues (name, 
 					version, 
@@ -197,7 +199,9 @@ namespace MonoDevelop.Ide.Projects
 					if (netProject != null) {
 						if (ProjectReferencePanel.ProjectReferencesProject (references, null, netProject, configureProject.Name))
 							continue;
-					    else if (!configureProject.TargetFramework.IsCompatibleWithFramework (netProject.TargetFramework.Id))
+
+						string reason;
+					    if (!configureProject.CanReferenceProject (netProject, out reason))
 							continue;
 					}
 					store.AppendValues (name, "", null, selected, projectEntry.Name, "", projectEntry.StockIcon, matchRank, ReferenceType.Project);

@@ -31,7 +31,6 @@ using ICSharpCode.NRefactory.CSharp.Refactoring;
 using MonoDevelop.Ide.Gui;
 using ICSharpCode.NRefactory;
 using System.Threading;
-using MonoDevelop.Refactoring;
 using MonoDevelop.Core;
 
 namespace MonoDevelop.CSharp.Refactoring.CodeActions
@@ -39,14 +38,14 @@ namespace MonoDevelop.CSharp.Refactoring.CodeActions
 	class NRefactoryCodeActionProvider : MonoDevelop.CodeActions.CodeActionProvider
 	{
 		readonly List<string> actionId = new List<string> ();
-		readonly ICodeActionProvider provider;
+		readonly CodeActionProvider provider;
 
-		public NRefactoryCodeActionProvider (ICodeActionProvider provider, ContextActionAttribute attr)
+		public NRefactoryCodeActionProvider (CodeActionProvider provider, ContextActionAttribute attr)
 		{
 			if (provider == null)
-				throw new System.ArgumentNullException ("provider");
+				throw new ArgumentNullException ("provider");
 			if (attr == null)
-				throw new System.ArgumentNullException ("attr");
+				throw new ArgumentNullException ("attr");
 			this.provider = provider;
 			Title = GettextCatalog.GetString (attr.Title ?? "");
 			Description = GettextCatalog.GetString (attr.Description ?? "");
@@ -54,11 +53,11 @@ namespace MonoDevelop.CSharp.Refactoring.CodeActions
 			MimeType = "text/x-csharp";
 		}
 
-		public override IEnumerable<MonoDevelop.CodeActions.CodeAction> GetActions (MonoDevelop.Ide.Gui.Document document, TextLocation loc, CancellationToken cancellationToken)
+		public override IEnumerable<MonoDevelop.CodeActions.CodeAction> GetActions (Document document, object _context, TextLocation loc, CancellationToken cancellationToken)
 		{
 			if (cancellationToken.IsCancellationRequested)
 				yield break;
-			var context = new MDRefactoringContext (document, loc);
+			var context = (MDRefactoringContext)_context;
 			if (context.IsInvalid || context.RootNode == null)
 				yield break;
 			var actions = provider.GetActions (context);
@@ -76,5 +75,12 @@ namespace MonoDevelop.CSharp.Refactoring.CodeActions
 				num++;
 			}
 		}
+
+		public override string IdString {
+			get {
+				return provider.GetType ().FullName;
+			}
+		}
+
 	}
 }

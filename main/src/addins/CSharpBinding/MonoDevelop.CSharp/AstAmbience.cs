@@ -28,10 +28,11 @@ using ICSharpCode.NRefactory.CSharp;
 using System.Text;
 using System.Collections.Generic;
 using System.Linq;
+using MonoDevelop.Core;
 
 namespace MonoDevelop.CSharp
 {
-	public class AstAmbience
+	class AstAmbience
 	{
 		CSharpFormattingOptions options;
 		
@@ -46,7 +47,7 @@ namespace MonoDevelop.CSharp
 				return false;
 			foreach (var section in entity.Attributes) {
 				foreach (var attr in section.Attributes) {
-					var attrText = attr.Type.GetText ();
+					var attrText = attr.Type.ToString ();
 					if (attrText == "Obsolete" || attrText == "ObsoleteAttribute" || attrText == "System.Obsolete" || attrText == "System.ObsoleteAttribute" )
 						return true;
 				}
@@ -66,7 +67,7 @@ namespace MonoDevelop.CSharp
 				} else {
 					first = false;
 				}
-				AppendEscaped (sb, param.GetText (options));
+				AppendEscaped (sb, param.ToString (options));
 			}
 			sb.Append ("&gt;");
 		}
@@ -95,7 +96,7 @@ namespace MonoDevelop.CSharp
 				} else {
 					first = false;
 				}
-				AppendEscaped (sb, param.GetText (options));
+				AppendEscaped (sb, param.ToString (options));
 			}
 			if (hasParameters && options.SpaceWithinMethodDeclarationParentheses)
 				sb.Append (" ");
@@ -104,6 +105,8 @@ namespace MonoDevelop.CSharp
 		
 		static void AppendEscaped (StringBuilder result, string text)
 		{
+			if (text == null)
+				return;
 			foreach (char ch in text) {
 				switch (ch) {
 				case '<':
@@ -135,6 +138,11 @@ namespace MonoDevelop.CSharp
 				var type = e as TypeDeclaration;
 				sb.Append (type.Name);
 				AppendTypeParameter (sb, type.TypeParameters);
+			} else if (e is DelegateDeclaration) {
+				var del = e as DelegateDeclaration;
+				sb.Append (del.Name);
+				AppendTypeParameter (sb, del.TypeParameters);
+				AppendParameter (sb, del.Parameters);
 			} else if (e is Accessor) {
 				if (e.Role == PropertyDeclaration.GetterRole) {
 					sb.Append ("get");
@@ -147,14 +155,26 @@ namespace MonoDevelop.CSharp
 				}
 			} else if (e is OperatorDeclaration) {
 				var op = e as OperatorDeclaration;
-				sb.Append ("operator");
-				AppendEscaped (sb, op.OperatorTypeToken.GetText ());
+				sb.Append ("operator ");
+				if (!op.OperatorTypeToken.IsNull)
+					AppendEscaped (sb, op.OperatorTypeToken.ToString ());
 				AppendParameter (sb, op.Parameters);
 			} else if (e is MethodDeclaration) {
 				var method = e as MethodDeclaration;
+				if (!method.PrivateImplementationType.IsNull)
+					AppendEscaped (sb, method.PrivateImplementationType.ToString () + ".");
 				sb.Append (method.Name);
 				AppendTypeParameter (sb, method.TypeParameters);
 				AppendParameter (sb, method.Parameters);
+				if (method.Body.IsNull) {
+					string tag = null;
+					if (method.HasModifier (Modifiers.Abstract))
+						tag = GettextCatalog.GetString ("(abstract)");
+					if (method.HasModifier (Modifiers.Partial))
+						tag = GettextCatalog.GetString ("(partial)");
+					if (tag != null)
+						sb.Append (" <small>" + tag + "</small>");
+				}
 			} else if (e is ConstructorDeclaration) {
 				var constructor = e as ConstructorDeclaration;
 				sb.Append (constructor.Name);
@@ -186,7 +206,7 @@ namespace MonoDevelop.CSharp
 					} else {
 						first = false;
 					}
-					sb.Append (param.GetText (options));
+					sb.Append (param.ToString (options));
 				}
 				if (options.SpaceWithinIndexerDeclarationBracket)
 					sb.Append (" ");
@@ -196,8 +216,18 @@ namespace MonoDevelop.CSharp
 				sb.Append (initializer.Name);
 				if (IsObsolete (initializer.Parent as EntityDeclaration))
 					return "<s>" + sb.ToString () + "</s>";
+			} else if (e is FixedVariableInitializer) {
+				var initializer = (FixedVariableInitializer)e;
+				sb.Append (initializer.Name);
+				if (IsObsolete (initializer.Parent as EntityDeclaration))
+					return "<s>" + sb.ToString () + "</s>";
 			} else if (e is FieldDeclaration) {
 				var field = (FieldDeclaration)e;
+				if (!field.Variables.Any ())
+					return "";
+				sb.Append (field.Variables.First ().Name);
+			} else if (e is FixedFieldDeclaration) {
+				var field = (FixedFieldDeclaration)e;
 				if (!field.Variables.Any ())
 					return "";
 				sb.Append (field.Variables.First ().Name);
@@ -206,11 +236,21 @@ namespace MonoDevelop.CSharp
 				if (!evt.Variables.Any ())
 					return "";
 				sb.Append (evt.Variables.First ().Name);
+			} else if (e is PropertyDeclaration) {
+				var property = (PropertyDeclaration)e;
+				if (!property.PrivateImplementationType.IsNull)
+					AppendEscaped (sb, property.PrivateImplementationType.ToString () + ".");
+				sb.Append (property.Name);
+			} else if (e is CustomEventDeclaration) {
+				var customEvent = (CustomEventDeclaration)e;
+				if (!customEvent.PrivateImplementationType.IsNull)
+					AppendEscaped (sb, customEvent.PrivateImplementationType.ToString () + ".");
+				sb.Append (customEvent.Name);
 			} else if (e is EntityDeclaration) {
 				var entity = (EntityDeclaration)e;
 				sb.Append (entity.Name);
 			}
-			
+
 			string markup = sb.ToString ();
 			if (IsObsolete (e as EntityDeclaration))
 				return "<s>" + markup + "</s>";

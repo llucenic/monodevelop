@@ -34,12 +34,12 @@ using ICSharpCode.NRefactory.CSharp.TypeSystem;
 
 namespace MonoDevelop.DocFood
 {
-	public enum Commands {
+	enum Commands {
 		DocumentThis,
 		DocumentBuffer
 	}
 	
-	public class DocumentThisHandler : CommandHandler
+	class DocumentThisHandler : CommandHandler
 	{
 		protected override void Update (CommandInfo info)
 		{
@@ -55,7 +55,7 @@ namespace MonoDevelop.DocFood
 		}
 	}
 	
-	public class DocumentBufferHandler : CommandHandler
+	class DocumentBufferHandler : CommandHandler
 	{
 		protected override void Update (CommandInfo info)
 		{
@@ -107,15 +107,12 @@ namespace MonoDevelop.DocFood
 		
 		static bool NeedsDocumentation (TextEditorData data, IUnresolvedEntity member)
 		{
-			int lineNr = member.Region.BeginLine;
+			int lineNr = member.Region.BeginLine - 1;
 			DocumentLine line;
 			do {
 				line = data.Document.GetLine (lineNr--);
 			} while (lineNr > 0 && data.Document.GetLineIndent (line).Length == line.Length);
-			int start = data.Document.GetLineIndent (line).Length;
-			if (start + 3 < line.Length && data.Document.GetTextAt (start, 3) == "///")
-				return false;
-			return true;
+			return !data.Document.GetTextAt (line).TrimStart ().StartsWith ("///", StringComparison.Ordinal);
 		}
 		
 		static string GetIndent (TextEditorData data, IEntity member, out int offset)

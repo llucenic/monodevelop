@@ -38,12 +38,12 @@ using MonoDevelop.Projects;
 
 namespace MonoDevelop.Html
 {
-	public class HtmlParser : AbstractTypeSystemParser
+	public class HtmlParser : TypeSystemParser
 	{
 		public override ParsedDocument Parse (bool storeAst, string fileName, TextReader tr, Project project = null)
 		{
 			var doc = new XmlParsedDocument (fileName);
-//			doc.Flags = ParsedDocumentFlags.NonSerializable;
+			doc.Flags = ParsedDocumentFlags.NonSerializable;
 			
 			try {
 				Parser xmlParser = new Parser (
