@@ -17,10 +17,26 @@ namespace MonoDevelop.VersionControl.Subversion.Unix
 {
 	public class SvnClient : SubversionVersionControl
 	{
-		internal static LibApr apr;
+		static LibApr apr;
 		static readonly Lazy<bool> isInstalled;
-		internal static LibSvnClient svn;
+		static LibSvnClient svn;
 		static readonly Lazy<bool> pre_1_7;
+
+		internal static LibApr Apr {
+			get {
+				if (apr == null)
+					CheckInstalled ();
+				return apr;
+			}
+		}
+
+		internal static LibSvnClient Svn {
+			get {
+				if (svn == null)
+					CheckInstalled ();
+				return svn;
+			}
+		}
 
 		internal static void CheckError (IntPtr error)
 		{
@@ -56,7 +72,7 @@ namespace MonoDevelop.VersionControl.Subversion.Unix
 				return error.message;
 			else {
 				byte[] buf = new byte [300];
-				svn.strerror (error.apr_err, buf, buf.Length);
+				Svn.strerror (error.apr_err, buf, buf.Length);
 				return Encoding.UTF8.GetString (buf);
 			}
 		}
@@ -64,7 +80,8 @@ namespace MonoDevelop.VersionControl.Subversion.Unix
 		internal static IntPtr newpool (IntPtr parent)
 		{
 			IntPtr p;
-			apr.pool_create_ex (out p, parent, IntPtr.Zero, IntPtr.Zero);
+
+			Apr.pool_create_ex (out p, parent, IntPtr.Zero, IntPtr.Zero);
 			if (p == IntPtr.Zero)
 				throw new InvalidOperationException ("Could not create an APR pool.");
 			return p;
@@ -74,7 +91,7 @@ namespace MonoDevelop.VersionControl.Subversion.Unix
 		{
 			if (pathOrUrl == null)
 				return null;
-			IntPtr res = svn.path_internal_style (pathOrUrl, localpool);
+			IntPtr res = Svn.path_internal_style (pathOrUrl, localpool);
 			return Marshal.PtrToStringAnsi (res);
 		}
 
@@ -107,7 +124,7 @@ namespace MonoDevelop.VersionControl.Subversion.Unix
 
 		public static string GetVersion ()
 		{
-			IntPtr ptr = svn.client_version ();
+			IntPtr ptr = Svn.client_version ();
 			LibSvnClient.svn_version_t ver = (LibSvnClient.svn_version_t)Marshal.PtrToStructure (ptr, typeof(LibSvnClient.svn_version_t));
 			return ver.major + "." + ver.minor + "." + ver.patch;
 		}
@@ -160,9 +177,9 @@ namespace MonoDevelop.VersionControl.Subversion.Unix
 			IntPtr localpool = newpool (IntPtr.Zero);
 			try {
 				string npath = NormalizePath (path, localpool);
-				CheckError (svn.client_url_from_path (ref ret, npath, localpool));
+				CheckError (Svn.client_url_from_path (ref ret, npath, localpool));
 			} finally {
-				apr.pool_destroy (localpool);
+				Apr.pool_destroy (localpool);
 			}
 
 			if (ret == IntPtr.Zero)
@@ -176,27 +193,25 @@ namespace MonoDevelop.VersionControl.Subversion.Unix
 			if (Pre_1_7)
 				return base.GetDirectoryDotSvn (path);
 
-			IntPtr localpool = newpool (IntPtr.Zero);
-			try {
-				IntPtr res = svn.repos_find_root_path (path, localpool);
-				return Marshal.PtrToStringAnsi (res);
-			} finally {
-				apr.pool_destroy (localpool);
-			}
+			UnixSvnBackend backend = CreateBackend () as UnixSvnBackend;
+			if (backend == null)
+				return String.Empty;
+
+			return backend.GetDirectoryDotSvnInternal (path);
 		}
 	}
 
 	public class UnixSvnBackend : SubversionBackend
 	{
 		protected static LibApr apr {
-			get { return SvnClient.apr; }
+			get {
+				return SvnClient.Apr;
+			}
 		}
 		
 		protected static LibSvnClient svn {
 			get {
-				if (SvnClient.svn == null)
-					SvnClient.CheckInstalled ();
-				return SvnClient.svn;
+				return SvnClient.Svn;
 			}
 		}
 
@@ -257,7 +272,10 @@ namespace MonoDevelop.VersionControl.Subversion.Unix
 			// for the authentication providers don't exist, authentication
 			// data won't be saved and no error is given.
 			svn.config_ensure (null, pool);
-			
+
+			// Load user and system configuration
+			svn.config_get_config (ref config_hash, null, pool);
+
 			if (svn.client_create_context (out ctx, pool) != IntPtr.Zero)
 				throw new InvalidOperationException ("Could not create a Subversion client context.");
 			
@@ -279,16 +297,13 @@ namespace MonoDevelop.VersionControl.Subversion.Unix
 			                     (int) Marshal.OffsetOf (typeof (LibSvnClient.svn_client_ctx_t), "cancel_func"),
 			                     Marshal.GetFunctionPointerForDelegate (cancel_func));
 
-
-			// Load user and system configuration
-			svn.config_get_config (ref config_hash, null, pool);
 			Marshal.WriteIntPtr (ctx,
 			                     (int) Marshal.OffsetOf (typeof (LibSvnClient.svn_client_ctx_t), "config"),
 			                     config_hash);
 
 			if (!SvnClient.Pre_1_7) {
 				IntPtr scratch = newpool (IntPtr.Zero);
-				svn.wc_context_create (out wc_ctx, config_hash, pool, scratch);
+				svn.wc_context_create (out wc_ctx, IntPtr.Zero, pool, scratch);
 				Marshal.WriteIntPtr (ctx,
 				                     (int) Marshal.OffsetOf (typeof (LibSvnClient.svn_client_ctx_t), "wc_ctx"),
 				                     wc_ctx);
@@ -726,21 +741,6 @@ namespace MonoDevelop.VersionControl.Subversion.Unix
 				}
 			
 				CheckError (svn.client_revert (array, recurse, ctx, localpool));
-			} finally {
-				apr.pool_destroy (localpool);
-				TryEndOperation ();
-			}
-		}
-
-		public override void Resolve (FilePath path, bool recurse, IProgressMonitor monitor)
-		{
-			if (path == FilePath.Null || monitor == null)
-				throw new ArgumentNullException();
-
-			var localpool = TryStartOperation (monitor);
-			try {
-				string pathorurl = NormalizePath (path, localpool);
-				CheckError (svn.client_resolved (pathorurl, recurse, ctx, localpool));
 			} finally {
 				apr.pool_destroy (localpool);
 				TryEndOperation ();
@@ -1446,6 +1446,34 @@ namespace MonoDevelop.VersionControl.Subversion.Unix
 			
 			if (lockFileList != null && data.lock_state == requiredLockState)
 				lockFileList.Add (file);
+		}
+
+		internal string GetDirectoryDotSvnInternal (FilePath path)
+		{
+			IntPtr result;
+			IntPtr scratch = newpool (pool);
+			var localpool = TryStartOperation (null);
+			try {
+				string new_path = NormalizePath (path.FullPath, localpool);
+				try {
+					CheckError (svn.client_get_wc_root (out result, new_path, ctx, localpool, scratch));
+				} catch (SubversionException e) {
+					// We are not in a working copy.
+					switch (e.ErrorCode) {
+					// SVN_ERR_WC_NOT_DIRECTORY
+					case 155007:
+						// SVN_ERR_WC_NOT_FILE
+					case 155008:
+						return "";
+					}
+					throw;
+				}
+				return Marshal.PtrToStringAnsi (result);
+			} finally {
+				apr.pool_destroy (localpool);
+				apr.pool_destroy (scratch);
+				TryEndOperation ();
+			}
 		}
 
 		public class StatusCollector {
